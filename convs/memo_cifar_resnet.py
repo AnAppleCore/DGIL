@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class DownsampleA(nn.Module):
     def __init__(self, nIn, nOut, stride):
         super(DownsampleA, self).__init__()

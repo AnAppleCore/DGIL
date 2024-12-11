@@ -6,6 +6,7 @@ https://github.com/hshustc/CVPR19_Incremental_Learning/blob/master/cifar100-clas
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 # from convs.modified_linear import CosineLinear
 
 

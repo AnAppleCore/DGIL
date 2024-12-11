@@ -1,5 +1,6 @@
-import json
 import argparse
+import json
+
 from trainer import train
 
 

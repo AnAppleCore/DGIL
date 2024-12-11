@@ -1,4 +1,7 @@
-def get_model(model_name, args):
+from models.base import BaseLearner
+
+
+def get_model(model_name: str, args: dict) -> BaseLearner:
     name = model_name.lower()
     if name == "icarl":
         from models.icarl import iCaRL

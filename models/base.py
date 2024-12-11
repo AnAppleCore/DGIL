@@ -1,12 +1,13 @@
 import copy
 import logging
+import os
+
 import numpy as np
 import torch
+from scipy.spatial.distance import cdist
 from torch import nn
 from torch.utils.data import DataLoader
-from utils.toolkit import tensor2numpy, accuracy
-from scipy.spatial.distance import cdist
-import os
+from utils.toolkit import accuracy, tensor2numpy
 
 EPSILON = 1e-8
 batch_size = 64

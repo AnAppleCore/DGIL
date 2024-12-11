@@ -1,15 +1,15 @@
-import logging
-import numpy as np
-from tqdm import tqdm
-import torch
-from torch import nn
 import copy
-from torch import optim
+import logging
+
+import numpy as np
+import torch
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
+from tqdm import tqdm
 from utils.inc_net import AdaptiveNet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
+from utils.toolkit import count_parameters, tensor2numpy
 
 num_workers=8
 EPSILON = 1e-8

@@ -10,18 +10,18 @@ References:
     Advances in Neural Information Processing Systems 35 (2022): 11602-11614.
 """
 
-import torch
 import logging
-import numpy as np
-from tqdm import tqdm
-from os import path, makedirs
-from utils.inc_net import ACILNet
-from models.base import BaseLearner
-from typing import Dict, Any, Optional, Sized
-from torch.utils.data import DataLoader, Sampler
-from utils.data_manager import DataManager, DummyDataset
-from tqdm.contrib.logging import logging_redirect_tqdm
+from os import makedirs, path
+from typing import Any, Dict, Optional, Sized
 
+import numpy as np
+import torch
+from models.base import BaseLearner
+from torch.utils.data import DataLoader, Sampler
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
+from utils.data_manager import DataManager, DummyDataset
+from utils.inc_net import ACILNet
 
 __all__ = [
     "ACIL",

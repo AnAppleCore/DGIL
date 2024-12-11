@@ -1,21 +1,24 @@
 import copy
 import logging
+from typing import Any, Dict
+
 import torch
-from torch import nn
+from convs.ACL_buffer import RandomBuffer, activation_t
 from convs.cifar_resnet import resnet32
+from convs.linears import (CosineLinear, RecursiveLinear, SimpleLinear,
+                           SplitCosineLinear)
+from convs.memo_cifar_resnet import \
+    get_resnet32_a2fc as get_memo_resnet32  # for MEMO cifar
+from convs.memo_resnet import \
+    get_resnet18_imagenet as get_memo_resnet18  # for MEMO imagenet
+from convs.modified_represnet import resnet18_rep, resnet34_rep
 from convs.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
+from convs.resnet_cbam import resnet18_cbam, resnet34_cbam, resnet50_cbam
 from convs.ucir_cifar_resnet import resnet32 as cosine_resnet32
 from convs.ucir_resnet import resnet18 as cosine_resnet18
 from convs.ucir_resnet import resnet34 as cosine_resnet34
 from convs.ucir_resnet import resnet50 as cosine_resnet50
-from convs.linears import SimpleLinear, SplitCosineLinear, CosineLinear
-from convs.modified_represnet import resnet18_rep,resnet34_rep
-from convs.resnet_cbam import resnet18_cbam,resnet34_cbam,resnet50_cbam
-from convs.memo_resnet import  get_resnet18_imagenet as get_memo_resnet18 #for MEMO imagenet
-from convs.memo_cifar_resnet import get_resnet32_a2fc as get_memo_resnet32 #for MEMO cifar
-from convs.ACL_buffer import RandomBuffer, activation_t
-from convs.linears import RecursiveLinear
-from typing import Dict, Any
+from torch import nn
 
 
 def get_convnet(args, pretrained=False):

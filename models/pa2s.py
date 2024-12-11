@@ -1,14 +1,14 @@
 import logging
+
 import numpy as np
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
-from torch.nn import functional as F
-from torch.utils.data import DataLoader,Dataset
 from models.base import BaseLearner
-from utils.inc_net import CosineIncrementalNet, FOSTERNet, IncrementalNet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
+from torch import nn
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from utils.inc_net import IncrementalNet
+from utils.toolkit import count_parameters, tensor2numpy
 
 EPSILON = 1e-8
 

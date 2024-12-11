@@ -1,8 +1,5 @@
-import torch
 import torch.nn as nn
-import math
 import torch.utils.model_zoo as model_zoo
-import torch.nn.functional as F
 
 __all__ = ['ResNet', 'resnet18_rep', 'resnet34_rep' ]
 
@@ -155,11 +152,11 @@ def resnet18_rep(pretrained=False, **kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
-    if pretrained:
-        pretrained_state_dict = model_zoo.load_url(model_urls['resnet18'])
-        now_state_dict        = model.state_dict()
-        now_state_dict.update(pretrained_state_dict)
-        model.load_state_dict(now_state_dict)
+    # if pretrained:
+    #     pretrained_state_dict = model_zoo.load_url(model_urls['resnet18'])
+    #     now_state_dict        = model.state_dict()
+    #     now_state_dict.update(pretrained_state_dict)
+    #     model.load_state_dict(now_state_dict)
     return model
 
 
@@ -169,9 +166,9 @@ def resnet34_rep(pretrained=False, **kwargs):
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
     model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
-    if pretrained:
-        pretrained_state_dict = model_zoo.load_url(model_urls['resnet34'])
-        now_state_dict        = model.state_dict()
-        now_state_dict.update(pretrained_state_dict)
-        model.load_state_dict(now_state_dict)
+    # if pretrained:
+    #     pretrained_state_dict = model_zoo.load_url(model_urls['resnet34'])
+    #     now_state_dict        = model.state_dict()
+    #     now_state_dict.update(pretrained_state_dict)
+    #     model.load_state_dict(now_state_dict)
     return model

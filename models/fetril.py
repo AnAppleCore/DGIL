@@ -15,20 +15,20 @@ T = 60     |   50.8       |  59.8        |  62.09         | 61.72          |
 
 
 import logging
+
 import numpy as np
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
-from torch.nn import functional as F
-from torch.utils.data import DataLoader,Dataset
 from models.base import BaseLearner
-from utils.inc_net import CosineIncrementalNet, FOSTERNet, IncrementalNet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
 from sklearn.svm import LinearSVC
-from torchvision import datasets, transforms
-from utils.autoaugment import CIFAR10Policy,ImageNetPolicy
+from torch import nn, optim
+from torch.nn import functional as F
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from tqdm import tqdm
+from utils.autoaugment import CIFAR10Policy
+from utils.inc_net import IncrementalNet
 from utils.ops import Cutout
+from utils.toolkit import count_parameters, tensor2numpy
 
 EPSILON = 1e-8
 

@@ -1,15 +1,15 @@
 # Please note that the current implementation of DER only contains the dynamic expansion process, since masking and pruning are not implemented by the source repo.
 import logging
+
 import numpy as np
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
-from utils.inc_net import DERNet, IncrementalNet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
+from tqdm import tqdm
+from utils.inc_net import DERNet
+from utils.toolkit import count_parameters, tensor2numpy
 
 EPSILON = 1e-8
 

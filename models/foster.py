@@ -1,14 +1,14 @@
 import logging
+
 import numpy as np
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
+from tqdm import tqdm
 from utils.inc_net import FOSTERNet
-from utils.toolkit import count_parameters, target2onehot, tensor2numpy
+from utils.toolkit import count_parameters, tensor2numpy
 
 # Please refer to https://github.com/G-U-N/ECCV22-FOSTER for the full source code to reproduce foster.
 

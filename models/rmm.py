@@ -1,19 +1,14 @@
-import copy
 import logging
+
 import numpy as np
 import torch
-from torch import nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from models.foster import FOSTER
-from utils.toolkit import count_parameters, tensor2numpy, accuracy
-from utils.inc_net import IncrementalNet
-from scipy.spatial.distance import cdist
 from models.base import BaseLearner
+from models.foster import FOSTER
 from models.icarl import iCaRL
-from tqdm import tqdm
-import torch.optim as optim
-
+from torch import nn
+from torch.utils.data import DataLoader
+from utils.toolkit import count_parameters
 
 EPSILON = 1e-8
 batch_size = 128

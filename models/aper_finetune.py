@@ -4,19 +4,19 @@ Note: this method was initially designed for PTMs, whereas it has been slightly 
 Please refer to the original implementation (https://github.com/zhoudw-zdw/RevisitingCIL) if you are using pre-trained weights.
 """
 
+import copy
 import logging
+
 import numpy as np
 import torch
-from torch import nn
-from tqdm import tqdm
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from utils.inc_net import IncrementalNet, SimpleCosineIncrementalNet, MultiBranchCosineIncrementalNet
-from models.base import BaseLearner
-from utils.toolkit import target2onehot, tensor2numpy
-import copy
-
+from tqdm import tqdm
+from utils.inc_net import (MultiBranchCosineIncrementalNet,
+                           SimpleCosineIncrementalNet)
+from utils.toolkit import tensor2numpy
 
 num_workers = 8
 

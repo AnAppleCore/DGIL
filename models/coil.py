@@ -1,20 +1,15 @@
 import logging
+
 import numpy as np
-from tqdm import tqdm
+import ot
 import torch
+from models.base import BaseLearner
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
-from utils.inc_net import (
-    IncrementalNet,
-    CosineIncrementalNet,
-    SimpleCosineIncrementalNet,
-)
+from tqdm import tqdm
+from utils.inc_net import SimpleCosineIncrementalNet
 from utils.toolkit import target2onehot, tensor2numpy
-import ot
-from torch import nn
-import copy
 
 EPSILON = 1e-8
 

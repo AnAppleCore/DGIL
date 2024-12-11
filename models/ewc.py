@@ -1,15 +1,14 @@
 import logging
+
 import numpy as np
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
-from models.podnet import pod_spatial_loss
+from tqdm import tqdm
 from utils.inc_net import IncrementalNet
-from utils.toolkit import target2onehot, tensor2numpy
+from utils.toolkit import tensor2numpy
 
 EPSILON = 1e-8
 

@@ -10,8 +10,9 @@ References:
     Proceedings of the AAAI Conference on Artificial Intelligence. Vol. 38. No. 15. 2024.
 """
 
-from .acil import ACIL
 from utils.inc_net import DSALNet
+
+from .acil import ACIL
 
 
 class DSAL(ACIL):

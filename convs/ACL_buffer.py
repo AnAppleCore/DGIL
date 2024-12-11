@@ -16,9 +16,10 @@ References:
     Proceedings of the AAAI Conference on Artificial Intelligence. Vol. 38. No. 15. 2024.
 """
 
-import torch
-from typing import Optional, Union, Callable
 from abc import ABCMeta, abstractmethod
+from typing import Callable, Optional, Union
+
+import torch
 
 __all__ = [
     "Buffer",

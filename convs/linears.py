@@ -3,11 +3,12 @@ Reference:
 https://github.com/hshustc/CVPR19_Incremental_Learning/blob/master/cifar100-class-incremental/modified_linear.py
 '''
 import math
+from abc import ABCMeta, abstractmethod
+from typing import Dict, Optional, Union
+
 import torch
 from torch import nn
 from torch.nn import functional as F
-from typing import Union, Optional, Dict
-from abc import ABCMeta, abstractmethod
 
 
 class SimpleLinear(nn.Module):

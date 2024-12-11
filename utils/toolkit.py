@@ -1,8 +1,10 @@
+import json
 import os
+from enum import Enum
+
 import numpy as np
 import torch
-import  json
-from enum import Enum
+
 
 class ConfigEncoder(json.JSONEncoder):
     def default(self, o):

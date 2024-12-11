@@ -1,16 +1,15 @@
 import logging
+
 import numpy as np
-from torch._C import device
-from tqdm import tqdm
 import torch
-from torch import nn
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
+from tqdm import tqdm
 from utils.inc_net import IncrementalNet
-from utils.inc_net import CosineIncrementalNet
-from utils.toolkit import target2onehot, tensor2numpy
+from utils.toolkit import tensor2numpy
+
 try:
     from quadprog import solve_qp
 except:

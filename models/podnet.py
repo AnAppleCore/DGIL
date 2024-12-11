@@ -1,11 +1,12 @@
-import math
 import logging
+import math
+
 import numpy as np
 import torch
+from models.base import BaseLearner
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
 from utils.inc_net import CosineIncrementalNet
 from utils.toolkit import tensor2numpy
 

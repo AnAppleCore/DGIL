@@ -1,10 +1,11 @@
 import logging
+
 import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
-from tqdm import tqdm
+
 
 class DataManager(object):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -292,20 +293,20 @@ def pil_loader(path):
         return img.convert("RGB")
 
 
-def accimage_loader(path):
-    """
-    Ref:
-    https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
-    accimage is an accelerated Image loader and preprocessor leveraging Intel IPP.
-    accimage is available on conda-forge.
-    """
-    import accimage
+# def accimage_loader(path):
+#     """
+#     Ref:
+#     https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
+#     accimage is an accelerated Image loader and preprocessor leveraging Intel IPP.
+#     accimage is available on conda-forge.
+#     """
+#     import accimage
 
-    try:
-        return accimage.Image(path)
-    except IOError:
-        # Potentially a decoding problem, fall back to PIL.Image
-        return pil_loader(path)
+#     try:
+#         return accimage.Image(path)
+#     except IOError:
+#         # Potentially a decoding problem, fall back to PIL.Image
+#         return pil_loader(path)
 
 
 def default_loader(path):
@@ -313,9 +314,10 @@ def default_loader(path):
     Ref:
     https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
     """
-    from torchvision import get_image_backend
+    # from torchvision import get_image_backend
 
-    if get_image_backend() == "accimage":
-        return accimage_loader(path)
-    else:
-        return pil_loader(path)
+    # if get_image_backend() == "accimage":
+    #     return accimage_loader(path)
+    # else:
+    #     return pil_loader(path)
+    return pil_loader(path)

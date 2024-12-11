@@ -1,12 +1,13 @@
-import sys
-import logging
 import copy
+import logging
+import os
+import sys
+
+import numpy as np
 import torch
 from utils import factory
 from utils.data_manager import DataManager
 from utils.toolkit import count_parameters
-import os
-import numpy as np
 
 
 def train(args):
@@ -140,7 +141,7 @@ def _train(args):
         print('Accuracy Matrix (NME):')
         print(np_acctable)
         print('Forgetting (NME):', forgetting)
-        logging.info('Forgetting (NME):', forgetting)
+        logging.info('Forgetting (NME): {}'.format(forgetting))
 
 
 def _set_device(args):

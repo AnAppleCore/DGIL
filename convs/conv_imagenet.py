@@ -4,7 +4,7 @@ Reference:
 https://github.com/wangkiw/ICLR23-MEMO/blob/main/convs/conv_imagenet.py
 '''
 import torch.nn as nn
-import torch
+
 
 # for imagenet
 def first_block(in_channels, out_channels):

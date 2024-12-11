@@ -1,13 +1,12 @@
 import logging
+
 import numpy as np
 import torch
-from torch import nn
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from models.base import BaseLearner
 from utils.inc_net import IncrementalNetWithBias
-
 
 epochs = 170
 lrate = 0.1
