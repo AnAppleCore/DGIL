@@ -71,13 +71,14 @@ class CILEnv:
         cnn_accy, nme_accy = self.model.eval_task()
         self.model.after_task()
         done = self.cur_task == self.nb_task - 1
-        info = "running task [{}/{}]:  dataset: {}, increment: {}, cnn_accy top1: {},  top5: {}".format(
+        info = "running task [{}/{}]:  dataset: {}, increment: {}, cnn_accy top1: {},  top{}: {}".format(
             self.model._known_classes,
             100,
             self._args["dataset"],
             self._args["increment"],
             cnn_accy["top1"],
-            cnn_accy["top5"],
+            self.model.topk,
+            cnn_accy[f"top{self.model.topk}"],
         )
         return (
             np.array(

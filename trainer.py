@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from utils import factory
 from utils.data_manager import DataManager
+from utils.domain_data_manager import DomainDataManager
 from utils.toolkit import count_parameters
 
 
@@ -22,7 +23,7 @@ def train(args):
 
 def _train(args):
 
-    init_cls = 0 if args ["init_cls"] == args["increment"] else args["init_cls"]
+    init_cls = 0 if args["init_cls"] == args["increment"] else args["init_cls"]
     logs_name = "logs/{}/{}/{}/{}".format(args["model_name"],args["dataset"], init_cls, args['increment'])
     
     if not os.path.exists(logs_name):
@@ -49,7 +50,11 @@ def _train(args):
     _set_random()
     _set_device(args)
     print_args(args)
-    data_manager = DataManager(
+    if "enable_dgil" in args and args["enable_dgil"]:
+        data_manager_cls = DomainDataManager
+    else:
+        data_manager_cls = DataManager
+    data_manager = data_manager_cls(
         args["dataset"],
         args["shuffle"],
         args["seed"],
@@ -57,8 +62,10 @@ def _train(args):
         args["increment"],
     )
     model = factory.get_model(args["model_name"], args)
+    model.register_data_info(data_manager)
+    logging.info("Class ID pairs: {}".format(model._class_id_pairs))
 
-    cnn_curve, nme_curve = {"top1": [], "top5": []}, {"top1": [], "top5": []}
+    cnn_curve, nme_curve = {"top1": [], f"top{model.topk}": []}, {"top1": [], f"top{model.topk}": []}
     cnn_matrix, nme_matrix = [], []
 
     for task in range(data_manager.nb_tasks):
@@ -86,15 +93,15 @@ def _train(args):
 
 
             cnn_curve["top1"].append(cnn_accy["top1"])
-            cnn_curve["top5"].append(cnn_accy["top5"])
+            cnn_curve[f"top{model.topk}"].append(cnn_accy[f"top{model.topk}"])
 
             nme_curve["top1"].append(nme_accy["top1"])
-            nme_curve["top5"].append(nme_accy["top5"])
+            nme_curve[f"top{model.topk}"].append(nme_accy[f"top{model.topk}"])
 
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
-            logging.info("CNN top5 curve: {}".format(cnn_curve["top5"]))
+            logging.info("CNN top{} curve: {}".format(model.topk, cnn_curve[f"top{model.topk}"]))
             logging.info("NME top1 curve: {}".format(nme_curve["top1"]))
-            logging.info("NME top5 curve: {}\n".format(nme_curve["top5"]))
+            logging.info("NME top{} curve: {}\n".format(model.topk, nme_curve[f"top{model.topk}"]))
 
             print('Average Accuracy (CNN):', sum(cnn_curve["top1"])/len(cnn_curve["top1"]))
             print('Average Accuracy (NME):', sum(nme_curve["top1"])/len(nme_curve["top1"]))
@@ -111,10 +118,10 @@ def _train(args):
             cnn_matrix.append(cnn_values)
 
             cnn_curve["top1"].append(cnn_accy["top1"])
-            cnn_curve["top5"].append(cnn_accy["top5"])
+            cnn_curve[f"top{model.topk}"].append(cnn_accy[f"top{model.topk}"])
 
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
-            logging.info("CNN top5 curve: {}\n".format(cnn_curve["top5"]))
+            logging.info("CNN top{} curve: {}\n".format(model.topk, cnn_curve[f"top{model.topk}"]))
 
             print('Average Accuracy (CNN):', sum(cnn_curve["top1"])/len(cnn_curve["top1"]))
             logging.info("Average Accuracy (CNN): {}".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))

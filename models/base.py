@@ -7,7 +7,8 @@ import torch
 from scipy.spatial.distance import cdist
 from torch import nn
 from torch.utils.data import DataLoader
-from utils.toolkit import accuracy, tensor2numpy
+from utils.data_manager import DataManager
+from utils.toolkit import accuracy, accuracy_per_task, tensor2numpy
 
 EPSILON = 1e-8
 batch_size = 64
@@ -19,10 +20,11 @@ class BaseLearner(object):
         self._cur_task = -1
         self._known_classes = 0
         self._total_classes = 0
+        self._class_id_pairs = []
         self._network = None
         self._old_network = None
         self._data_memory, self._targets_memory = np.array([]), np.array([])
-        self.topk = 5
+        self.topk = min(5, args["init_cls"])
 
         self._memory_size = args["memory_size"]
         self._memory_per_class = args.get("memory_per_class", None)
@@ -52,6 +54,14 @@ class BaseLearner(object):
         else:
             return self._network.feature_dim
 
+    def register_data_info(self, data_manager: DataManager):
+        start_class_id = 0
+        end_class_id = -1
+        for _increment in data_manager._increments:
+            start_class_id = end_class_id + 1
+            end_class_id += _increment
+            self._class_id_pairs.append((start_class_id, end_class_id))
+
     def build_rehearsal_memory(self, data_manager, per_class):
         if self._fixed_memory:
             self._construct_exemplar_unified(data_manager, per_class)
@@ -72,7 +82,8 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
-        grouped = accuracy(y_pred.T[0], y_true, self._known_classes)
+        # grouped = accuracy(y_pred.T[0], y_true, self._known_classes)
+        grouped = accuracy_per_task(y_pred.T[0], y_true, self._known_classes, self._class_id_pairs)
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
         ret["top{}".format(self.topk)] = np.around(
@@ -188,7 +199,10 @@ class BaseLearner(object):
 
         for class_idx in range(self._known_classes):
             mask = np.where(dummy_targets == class_idx)[0]
-            dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
+            if len(dummy_data[mask]) < m:
+                dd, dt = dummy_data[mask], dummy_targets[mask]
+            else:
+                dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
             self._data_memory = (
                 np.concatenate((self._data_memory, dd))
                 if len(self._data_memory) != 0
@@ -253,10 +267,14 @@ class BaseLearner(object):
                     data, i, axis=0
                 )  # Remove it to avoid duplicative selection
 
+                if len(vectors) == 0:
+                    break
+
             # uniques = np.unique(selected_exemplars, axis=0)
             # print('Unique elements: {}'.format(len(uniques)))
             selected_exemplars = np.array(selected_exemplars)
-            exemplar_targets = np.full(m, class_idx)
+            len_selected = len(selected_exemplars)
+            exemplar_targets = np.full(len_selected, class_idx)
             self._data_memory = (
                 np.concatenate((self._data_memory, selected_exemplars))
                 if len(self._data_memory) != 0
@@ -352,8 +370,12 @@ class BaseLearner(object):
                     data, i, axis=0
                 )  # Remove it to avoid duplicative selection
 
+                if len(vectors) == 0:
+                    break
+
             selected_exemplars = np.array(selected_exemplars)
-            exemplar_targets = np.full(m, class_idx)
+            len_selected = len(selected_exemplars)
+            exemplar_targets = np.full(len_selected, class_idx)
             self._data_memory = (
                 np.concatenate((self._data_memory, selected_exemplars))
                 if len(self._data_memory) != 0

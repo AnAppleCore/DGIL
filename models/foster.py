@@ -383,7 +383,7 @@ class FOSTER(BaseLearner):
         cnn_accy = self._evaluate(y_pred, y_true)
         logging.info("darknet eval: ")
         logging.info("CNN top1 curve: {}".format(cnn_accy["top1"]))
-        logging.info("CNN top5 curve: {}".format(cnn_accy["top5"]))
+        logging.info("CNN top{} curve: {}".format(self.topk, cnn_accy[f"top{self.topk}"]))
 
     @property
     def samples_old_class(self):

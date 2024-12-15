@@ -79,6 +79,45 @@ def accuracy(y_pred, y_true, nb_old, increment=10):
     return all_acc
 
 
+def accuracy_per_task(y_pred, y_true, nb_old, class_id_pairs=[(0, 9)]):
+    assert len(y_pred) == len(y_true), "Data length error."
+    all_acc = {}
+    all_acc["total"] = np.around(
+        (y_pred == y_true).sum() * 100 / len(y_true), decimals=2
+    )
+
+    # Grouped accuracy
+    for start_class_id, end_class_id in class_id_pairs:
+        if start_class_id <= np.max(y_true):
+            idxes = np.where(
+                np.logical_and(y_true >= start_class_id, y_true <= end_class_id)
+            )[0]
+            label = "{}-{}".format(
+                str(start_class_id).rjust(2, "0"), str(end_class_id).rjust(2, "0")
+            )
+            all_acc[label] = np.around(
+                (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
+            )
+
+    # Old accuracy
+    idxes = np.where(y_true < nb_old)[0]
+    all_acc["old"] = (
+        0
+        if len(idxes) == 0
+        else np.around(
+            (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
+        )
+    )
+
+    # New accuracy
+    idxes = np.where(y_true >= nb_old)[0]
+    all_acc["new"] = np.around(
+        (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
+    )
+
+    return all_acc
+
+
 def split_images_labels(imgs):
     # split trainset.imgs in ImageFolder
     images = []
@@ -88,6 +127,20 @@ def split_images_labels(imgs):
         labels.append(item[1])
 
     return np.array(images), np.array(labels)
+
+
+def split_train_val(images:np.ndarray, labels:np.ndarray, val_ratio=0.3, seed=42):
+    # randomly split train and val
+    num_val = int(len(images) * val_ratio)
+    np.random.seed(seed)
+    idx = np.random.permutation(len(images))
+    images_train = images[idx[num_val:]]
+    labels_train = labels[idx[num_val:]]
+    images_val = images[idx[:num_val]]
+    labels_val = labels[idx[:num_val]]
+
+    return images_train, labels_train, images_val, labels_val
+
 
 def save_fc(args, model):
     _path = os.path.join(args['logfilename'], "fc.pt")

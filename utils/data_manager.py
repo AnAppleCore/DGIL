@@ -4,7 +4,9 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
+from utils.data import (iCIFAR10, iCIFAR100, iCORe50, iDomainNet, iGanFake,
+                        iImageCLEF, iImageNet100, iImageNet1000, iOffice31,
+                        iOfficeCaltech, iOfficeHome)
 
 
 class DataManager(object):
@@ -82,7 +84,6 @@ class DataManager(object):
         else:
             return DummyDataset(data, targets, trsf, self.use_path)
 
-        
     def get_finetune_dataset(self,known_classes,total_classes,source,mode,appendent,type="ratio"):
         if source == 'train':
             x, y = self._train_data, self._train_targets
@@ -193,6 +194,13 @@ class DataManager(object):
         self._test_data, self._test_targets = idata.test_data, idata.test_targets
         self.use_path = idata.use_path
 
+        # Combine data across domains
+        if dataset_name in ["cddb", 'core50', 'domainnet', 'officehome', 'officecaltech', 'office31', 'imageclef']:
+            self._train_data = np.concatenate(self._train_data)
+            self._train_targets = np.concatenate(self._train_targets)
+            self._test_data = np.concatenate(self._test_data)
+            self._test_targets = np.concatenate(self._test_targets)
+
         # Transforms
         self._train_trsf = idata.train_trsf
         self._test_trsf = idata.test_trsf
@@ -278,6 +286,20 @@ def _get_idata(dataset_name):
         return iImageNet1000()
     elif name == "imagenet100":
         return iImageNet100()
+    elif name == "cddb":
+        return iGanFake()
+    elif name == "core50":
+        return iCORe50()
+    elif name == "domainnet":
+        return iDomainNet()
+    elif name == "officehome":
+        return iOfficeHome()
+    elif name == "officecaltech":
+        return iOfficeCaltech()
+    elif name == "office31":
+        return iOffice31()
+    elif name == "imageclef":
+        return iImageCLEF()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 
@@ -293,31 +315,9 @@ def pil_loader(path):
         return img.convert("RGB")
 
 
-# def accimage_loader(path):
-#     """
-#     Ref:
-#     https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
-#     accimage is an accelerated Image loader and preprocessor leveraging Intel IPP.
-#     accimage is available on conda-forge.
-#     """
-#     import accimage
-
-#     try:
-#         return accimage.Image(path)
-#     except IOError:
-#         # Potentially a decoding problem, fall back to PIL.Image
-#         return pil_loader(path)
-
-
 def default_loader(path):
     """
     Ref:
     https://pytorch.org/docs/stable/_modules/torchvision/datasets/folder.html#ImageFolder
     """
-    # from torchvision import get_image_backend
-
-    # if get_image_backend() == "accimage":
-    #     return accimage_loader(path)
-    # else:
-    #     return pil_loader(path)
     return pil_loader(path)
