@@ -1,5 +1,5 @@
 {
-    "prefix": "CIL",
+    "prefix": "DGIL",
     "dataset": "officehome",
     "memory_size": 325,
     "memory_per_class": 5,
@@ -7,8 +7,9 @@
     "shuffle": true,
     "init_cls": 35,
     "increment": 6,
-    "model_name": "replay",
+    "model_name": "finetune",
     "convnet_type": "resnet18",
     "device": ["0","1","2","3"],
-    "seed": [1993]
+    "seed": [1993],
+    "enable_dgil": true
 }

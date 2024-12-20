@@ -5,8 +5,9 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 from utils.data import (iCIFAR10, iCIFAR100, iCORe50, iDomainNet, iGanFake,
-                        iImageCLEF, iImageNet100, iImageNet1000, iOffice31,
-                        iOfficeCaltech, iOfficeHome)
+                        iImageCLEF, iImageNet100, iImageNet1000,
+                        iMiniDomainNet, iOffice31, iOfficeCaltech, iOfficeHome,
+                        use_multi_domain_dataset)
 
 
 class DataManager(object):
@@ -195,7 +196,7 @@ class DataManager(object):
         self.use_path = idata.use_path
 
         # Combine data across domains
-        if dataset_name in ["cddb", 'core50', 'domainnet', 'officehome', 'officecaltech', 'office31', 'imageclef']:
+        if use_multi_domain_dataset(dataset_name):
             self._train_data = np.concatenate(self._train_data)
             self._train_targets = np.concatenate(self._train_targets)
             self._test_data = np.concatenate(self._test_data)
@@ -292,6 +293,8 @@ def _get_idata(dataset_name):
         return iCORe50()
     elif name == "domainnet":
         return iDomainNet()
+    elif name == "minidomainnet":
+        return iMiniDomainNet()
     elif name == "officehome":
         return iOfficeHome()
     elif name == "officecaltech":

@@ -1,12 +1,16 @@
 import logging
 
 import numpy as np
-from utils.data_manager import DataManager, _get_idata, _map_new_class_index
+from torchvision import transforms
+from utils.data_manager import (DataManager, DummyDataset, _get_idata,
+                                _map_new_class_index)
 
 
 class DomainDataManager(DataManager):
-    def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
+    def __init__(self, dataset_name, shuffle, seed, init_cls, increment, enable_dgil=False, reference_domain_id=0):
         self.dataset_name = dataset_name
+        self.enable_dgil = enable_dgil
+        self.reference_domain_id = reference_domain_id
         self._setup_data(dataset_name, shuffle, seed, init_cls, increment)
 
     def _setup_data(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -17,6 +21,9 @@ class DomainDataManager(DataManager):
         self._train_data, self._train_targets = idata.train_data, idata.train_targets
         self._test_data, self._test_targets = idata.test_data, idata.test_targets
         self.use_path = idata.use_path
+        self.num_domains = len(self._train_data)
+        self.domain_names = idata.domain_names
+        logging.info("Number of domains: {}".format(self.num_domains))
 
         # Transforms
         self._train_trsf = idata.train_trsf
@@ -52,35 +59,105 @@ class DomainDataManager(DataManager):
             for _test_targets_d in self._test_targets
         ]
 
-        # By default, we use all the training data and targets from the first domain
-        # and for the later domains, we only use the training data and targets of the first task
-        self.num_domains = len(self._train_data)
-        logging.info("Number of domains: {}".format(self.num_domains))
+        # Disable DGIL
+        if not self.enable_dgil:
+            self._train_domain_idx = []
+            self._test_domain_idx = []
+            for d in range(self.num_domains):
+                self._train_domain_idx.append(np.ones(len(self._train_data[d]), dtype=np.int32) * d)
+                self._test_domain_idx.append(np.ones(len(self._test_data[d]), dtype=np.int32) * d)
+                logging.info("Number of trainings imgs from domain {}: {}/{}".format(self.domain_names[d], len(self._train_data[d]), len(self._train_data[d])))
+                logging.info("Number of test imgs from domain {}: {}/{}".format(self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
 
-        _train_data = [self._train_data[0]]
-        _train_targets = [self._train_targets[0]]
-        _train_domain_idx = [np.zeros(len(self._train_data[0]), dtype=np.int32)]
-        _test_domain_idx = [np.zeros(len(self._test_data[0]), dtype=np.int32)]
-        logging.info("Number of trainings imgs from domain 0: {}/{}".format(len(self._train_data[0]), len(self._train_data[0])))
-        logging.info("Number of test imgs from domain 0: {}/{}".format(len(self._test_data[0]), len(self._test_data[0])))
+            self._train_domain_idx = np.concatenate(self._train_domain_idx)
+            self._test_domain_idx = np.concatenate(self._test_domain_idx)
 
-        for d in range(1, self.num_domains):
-            _train_data_d, _train_targets_d = self._select(
-                self._train_data[d], self._train_targets[d], 0, self.get_task_size(0)
+            self._train_data = np.concatenate(self._train_data)
+            self._train_targets = np.concatenate(self._train_targets)
+            self._test_data = np.concatenate(self._test_data)
+            self._test_targets = np.concatenate(self._test_targets)
+
+            return
+
+        else:
+            _train_data, _train_targets = [], []
+            _train_domain_idx, _test_domain_idx = [], []
+
+            for d in range(self.num_domains):
+                if d == self.reference_domain_id:
+                    _train_data_d = self._train_data[d]
+                    _train_targets_d = self._train_targets[d]
+                else:
+                    # retrieve the first task
+                    _train_data_d, _train_targets_d = self._select(
+                        self._train_data[d], self._train_targets[d], 0, self.get_task_size(0)
+                    )
+                _train_data.append(_train_data_d)
+                _train_targets.append(_train_targets_d)
+                _train_domain_idx.append(np.ones(len(_train_data_d), dtype=np.int32) * d)
+                _test_domain_idx.append(np.ones(len(self._test_data[d]), dtype=np.int32) * d)
+                logging.info("Number of trainings imgs from domain {}: {}/{}".format(d, len(_train_data_d), len(self._train_data[d])))
+                logging.info("Number of test imgs from domain {}: {}/{}".format(d, len(self._test_data[d]), len(self._test_data[d])))
+
+            self._train_data = np.concatenate(_train_data)
+            self._train_targets = np.concatenate(_train_targets)
+            self._train_domain_idx = np.concatenate(_train_domain_idx)
+
+            self._test_data = np.concatenate(self._test_data)
+            self._test_targets = np.concatenate(self._test_targets)
+            self._test_domain_idx = np.concatenate(_test_domain_idx)
+
+            return
+
+
+    def get_domain_dataset(
+        self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None
+    ):
+        if source == "train":
+            domain_idx = np.where(self._train_domain_idx == domain_id)[0]
+            x, y = self._train_data[domain_idx], self._train_targets[domain_idx]
+        elif source == "test":
+            domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+            x, y = self._test_data[domain_idx], self._test_targets[domain_idx]
+        else:
+            raise ValueError("Unknown data source {}.".format(source))
+
+        if mode == "train":
+            trsf = transforms.Compose([*self._train_trsf, *self._common_trsf])
+        elif mode == "flip":
+            trsf = transforms.Compose(
+                [
+                    *self._test_trsf,
+                    transforms.RandomHorizontalFlip(p=1.0),
+                    *self._common_trsf,
+                ]
             )
-            _train_data.append(_train_data_d)
-            _train_targets.append(_train_targets_d)
-            _train_domain_idx.append(np.ones(len(_train_data_d), dtype=np.int32) * d)
-            _test_domain_idx.append(np.ones(len(self._test_data[d]), dtype=np.int32) * d)
-            logging.info("Number of trainings imgs from domain {}: {}/{}".format(d, len(_train_data_d), len(self._train_data[d])))
-            logging.info("Number of test imgs from domain {}: {}/{}".format(d, len(self._test_data[d]), len(self._test_data[d])))
+        elif mode == "test":
+            trsf = transforms.Compose([*self._test_trsf, *self._common_trsf])
+        else:
+            raise ValueError("Unknown mode {}.".format(mode))
 
-        self._train_data = np.concatenate(_train_data)
-        self._train_targets = np.concatenate(_train_targets)
-        self._train_domain_idx = np.concatenate(_train_domain_idx)
+        data, targets = [], []
+        for idx in indices:
+            if m_rate is None:
+                class_data, class_targets = self._select(
+                    x, y, low_range=idx, high_range=idx + 1
+                )
+            else:
+                class_data, class_targets = self._select_rmm(
+                    x, y, low_range=idx, high_range=idx + 1, m_rate=m_rate
+                )
+            data.append(class_data)
+            targets.append(class_targets)
 
-        self._test_data = np.concatenate(self._test_data)
-        self._test_targets = np.concatenate(self._test_targets)
-        self._test_domain_idx = np.concatenate(_test_domain_idx)
+        if appendent is not None and len(appendent) != 0:
+            appendent_data, appendent_targets = appendent
+            data.append(appendent_data)
+            targets.append(appendent_targets)
 
-        #TODO implement other data steam setting
+        data, targets = np.concatenate(data), np.concatenate(targets)
+
+        if ret_data:
+            return data, targets, DummyDataset(data, targets, trsf, self.use_path)
+        else:
+            return DummyDataset(data, targets, trsf, self.use_path)

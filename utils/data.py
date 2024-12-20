@@ -4,6 +4,11 @@ import numpy as np
 from torchvision import datasets, transforms
 from utils.toolkit import split_images_labels, split_train_val
 
+MultiDomainDatasets = ["domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef"]
+
+def use_multi_domain_dataset(dataset_name):
+    return dataset_name in MultiDomainDatasets
+
 
 class iData(object):
     train_trsf = []
@@ -182,6 +187,66 @@ class iDomainNet(iData):
 
         test_image_list_paths = [
             os.path.join(root_dir, d + "_" + "test" + ".txt") for d in self.domain_names
+        ]
+        for domain_id, test_image_list_path in enumerate(test_image_list_paths):
+            test_image_list = open(test_image_list_path, "r").readlines()
+            test_images = [
+                os.path.join(root_dir, line.split()[0]) for line in test_image_list
+            ]
+            test_labels = [
+                int(line.split()[1]) for line in test_image_list
+            ]
+
+            self.test_data.append(np.array(test_images))
+            self.test_targets.append(np.array(test_labels))
+
+
+class iMiniDomainNet(iData):
+    use_path = True
+    train_trsf = [
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+    ]
+    test_trsf = [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+    ]
+    common_trsf = [
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+
+    class_order = np.arange(345).tolist()
+    domain_names = ["clipart", "painting", "real", "sketch"]
+
+    def download_data(self):
+        # assert 0, "You should specify the folder of your dataset"
+        root_dir = "/data/datasets/DomainNet/"
+        image_list_dir = os.path.join(root_dir, "splits_mini")
+
+        self.train_data = []
+        self.train_targets = []
+
+        train_image_list_paths = [
+            os.path.join(image_list_dir, d + "_" + "train" + ".txt") for d in self.domain_names
+        ]
+        for domain_id, train_image_list_path in enumerate(train_image_list_paths):
+            train_image_list = open(train_image_list_path, "r").readlines()
+            train_images = [
+                os.path.join(root_dir, line.split()[0]) for line in train_image_list
+            ]
+            train_labels = [
+                int(line.split()[1]) for line in train_image_list
+            ]
+
+            self.train_data.append(np.array(train_images))
+            self.train_targets.append(np.array(train_labels))
+
+        self.test_data = []
+        self.test_targets = []
+
+        test_image_list_paths = [
+            os.path.join(image_list_dir, d + "_" + "test" + ".txt") for d in self.domain_names
         ]
         for domain_id, test_image_list_path in enumerate(test_image_list_paths):
             test_image_list = open(test_image_list_path, "r").readlines()

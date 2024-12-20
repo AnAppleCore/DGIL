@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+from typing import Union
 
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ from scipy.spatial.distance import cdist
 from torch import nn
 from torch.utils.data import DataLoader
 from utils.data_manager import DataManager
+from utils.domain_data_manager import DomainDataManager
 from utils.toolkit import accuracy, accuracy_per_task, tensor2numpy
 
 EPSILON = 1e-8
@@ -32,6 +34,8 @@ class BaseLearner(object):
         self._device = args["device"][0]
         self._multiple_gpus = args["device"]
 
+        self.test_loader = None
+
     @property
     def exemplar_size(self):
         assert len(self._data_memory) == len(
@@ -54,13 +58,16 @@ class BaseLearner(object):
         else:
             return self._network.feature_dim
 
-    def register_data_info(self, data_manager: DataManager):
+    def register_data_info(self, data_manager: Union[DataManager, DomainDataManager] = None):
         start_class_id = 0
         end_class_id = -1
         for _increment in data_manager._increments:
             start_class_id = end_class_id + 1
             end_class_id += _increment
             self._class_id_pairs.append((start_class_id, end_class_id))
+
+        # For later use, e.g., computing domain-wise task accuracy
+        self.data_manager = data_manager
 
     def build_rehearsal_memory(self, data_manager, per_class):
         if self._fixed_memory:
@@ -117,6 +124,30 @@ class BaseLearner(object):
                 f.write(f"{self.args['time_str']},{self.args['model_name']},{_pred_path},{_target_path} \n")
 
         return cnn_accy, nme_accy
+    
+    def eval_task_per_domain(self, save_conf=False):
+        cnn_accy_per_domain = {}
+        nme_accy_per_domain = {}
+        for domain_id, domain_name in enumerate(self.data_manager.domain_names):
+            domain_test_loader = self.get_domain_test_loader(domain_id)
+            y_pred, y_true = self._eval_cnn(domain_test_loader)
+            cnn_accy_per_domain[domain_name] = self._evaluate(y_pred, y_true)
+            if hasattr(self, "_class_means"):
+                y_pred, y_true = self._eval_nme(domain_test_loader, self._class_means)
+                nme_accy_per_domain[domain_name] = self._evaluate(y_pred, y_true)
+            else:
+                nme_accy_per_domain[domain_name] = None
+
+        return cnn_accy_per_domain, nme_accy_per_domain
+    
+    def get_domain_test_loader(self, domain_id):
+        domain_test_dataset = self.data_manager.get_domain_dataset(
+            np.arange(0, self._total_classes), source="test", mode="test", domain_id=domain_id,
+        )
+        domain_test_loader = DataLoader(
+            domain_test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+        )
+        return domain_test_loader
 
     def incremental_train(self):
         pass
