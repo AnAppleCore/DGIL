@@ -1,25 +1,25 @@
 import logging
-
 import numpy as np
+from tqdm import tqdm
 import torch
-from models.base import BaseLearner
-from torch import nn, optim
+from torch import nn
+from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from models.base import BaseLearner
 from utils.inc_net import FOSTERNet
-from utils.toolkit import count_parameters, tensor2numpy
+from utils.toolkit import count_parameters, target2onehot, tensor2numpy
 
 # Please refer to https://github.com/G-U-N/ECCV22-FOSTER for the full source code to reproduce foster.
 
 EPSILON = 1e-8
 
 
-class FOSTER(BaseLearner):
+class Learner(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
-        self._network = FOSTERNet(args, False)
+        self._network = FOSTERNet(args, True)
         self._snet = None
         self.beta1 = args["beta1"]
         self.beta2 = args["beta2"]
@@ -49,7 +49,7 @@ class FOSTER(BaseLearner):
         )
 
         if self._cur_task > 0:
-            for p in self._network.convnets[0].parameters():
+            for p in self._network.backbones[0].parameters():
                 p.requires_grad = False
             for p in self._network.oldfc.parameters():
                 p.requires_grad = False
@@ -91,9 +91,9 @@ class FOSTER(BaseLearner):
 
     def train(self):
         self._network_module_ptr.train()
-        self._network_module_ptr.convnets[-1].train()
+        self._network_module_ptr.backbones[-1].train()
         if self._cur_task >= 1:
-            self._network_module_ptr.convnets[0].eval()
+            self._network_module_ptr.backbones[0].eval()
 
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
@@ -208,7 +208,7 @@ class FOSTER(BaseLearner):
                 )
 
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
 
     def _feature_boosting(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.args["boosting_epochs"]))
@@ -283,10 +283,10 @@ class FOSTER(BaseLearner):
                     train_acc,
                 )
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
 
     def _feature_compression(self, train_loader, test_loader):
-        self._snet = FOSTERNet(self.args, False)
+        self._snet = FOSTERNet(self.args, True)
         self._snet.update_fc(self._total_classes)
         if len(self._multiple_gpus) > 1:
             self._snet = nn.DataParallel(self._snet, self._multiple_gpus)
@@ -295,8 +295,8 @@ class FOSTER(BaseLearner):
         else:
             self._snet_module_ptr = self._snet
         self._snet.to(self._device)
-        self._snet_module_ptr.convnets[0].load_state_dict(
-            self._network_module_ptr.convnets[0].state_dict()
+        self._snet_module_ptr.backbones[0].load_state_dict(
+            self._network_module_ptr.backbones[0].state_dict()
         )
         self._snet_module_ptr.copy_fc(self._network_module_ptr.oldfc)
         optimizer = optim.SGD(
@@ -355,7 +355,7 @@ class FOSTER(BaseLearner):
                     train_acc,
                 )
             prog_bar.set_description(info)
-            logging.info(info)
+        logging.info(info)
         if len(self._multiple_gpus) > 1:
             self._snet = self._snet.module
         if self.is_student_wa:
@@ -383,7 +383,7 @@ class FOSTER(BaseLearner):
         cnn_accy = self._evaluate(y_pred, y_true)
         logging.info("darknet eval: ")
         logging.info("CNN top1 curve: {}".format(cnn_accy["top1"]))
-        logging.info("CNN top{} curve: {}".format(self.topk, cnn_accy[f"top{self.topk}"]))
+        logging.info("CNN top{} curve: {}".format(self.topk,cnn_accy["top{self.topk}"]))
 
     @property
     def samples_old_class(self):

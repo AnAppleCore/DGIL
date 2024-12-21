@@ -1,24 +1,21 @@
-import copy
-import logging
 import os
 from typing import Union
-
+import copy
+import logging
 import numpy as np
 import torch
-from scipy.spatial.distance import cdist
 from torch import nn
 from torch.utils.data import DataLoader
 from utils.data_manager import DataManager
 from utils.domain_data_manager import DomainDataManager
-from utils.toolkit import accuracy, accuracy_per_task, tensor2numpy
+from utils.toolkit import tensor2numpy, accuracy
+from scipy.spatial.distance import cdist
 
 EPSILON = 1e-8
 batch_size = 64
 
-
 class BaseLearner(object):
     def __init__(self, args):
-        self.args = args
         self._cur_task = -1
         self._known_classes = 0
         self._total_classes = 0
@@ -33,6 +30,7 @@ class BaseLearner(object):
         self._fixed_memory = args.get("fixed_memory", False)
         self._device = args["device"][0]
         self._multiple_gpus = args["device"]
+        self.args = args
 
         self.test_loader = None
 
@@ -68,13 +66,46 @@ class BaseLearner(object):
 
         # For later use, e.g., computing domain-wise task accuracy
         self.data_manager = data_manager
-
+    
     def build_rehearsal_memory(self, data_manager, per_class):
         if self._fixed_memory:
             self._construct_exemplar_unified(data_manager, per_class)
         else:
             self._reduce_exemplar(data_manager, per_class)
             self._construct_exemplar(data_manager, per_class)
+
+    def tsne(self,showcenters=False,Normalize=False):
+        import umap
+        import matplotlib.pyplot as plt
+        print('now draw tsne results of extracted features.')
+        tot_classes=self._total_classes
+        test_dataset = self.data_manager.get_dataset(np.arange(0, tot_classes), source='test', mode='test')
+        valloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+        vectors, y_true = self._extract_vectors(valloader)
+        if showcenters:
+            fc_weight=self._network.fc.proj.cpu().detach().numpy()[:tot_classes]
+            print(fc_weight.shape)
+            vectors=np.vstack([vectors,fc_weight])
+        
+        if Normalize:
+            vectors = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
+
+        embedding = umap.UMAP(n_neighbors=5,
+                      min_dist=0.3,
+                      metric='correlation').fit_transform(vectors)
+        
+        if showcenters:
+            clssscenters=embedding[-tot_classes:,:]
+            centerlabels=np.arange(tot_classes)
+            embedding=embedding[:-tot_classes,:]
+        scatter=plt.scatter(embedding[:,0],embedding[:,1],c=y_true,s=20,cmap=plt.cm.get_cmap("tab20"))
+        plt.legend(*scatter.legend_elements())
+        if showcenters:
+            plt.scatter(clssscenters[:,0],clssscenters[:,1],marker='*',s=50,c=centerlabels,cmap=plt.cm.get_cmap("tab20"),edgecolors='black')
+        
+        plt.savefig(str(self.args['model_name'])+str(tot_classes)+'tsne.pdf')
+        plt.close()
+
 
     def save_checkpoint(self, filename):
         self._network.cpu()
@@ -89,8 +120,7 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
-        # grouped = accuracy(y_pred.T[0], y_true, self._known_classes)
-        grouped = accuracy_per_task(y_pred.T[0], y_true, self._known_classes, self._class_id_pairs)
+        grouped = accuracy(y_pred.T[0], y_true, self._known_classes, self.args["init_cls"], self.args["increment"])
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
         ret["top{}".format(self.topk)] = np.around(
@@ -100,7 +130,7 @@ class BaseLearner(object):
 
         return ret
 
-    def eval_task(self, save_conf=False):
+    def eval_task(self):
         y_pred, y_true = self._eval_cnn(self.test_loader)
         cnn_accy = self._evaluate(y_pred, y_true)
 
@@ -110,22 +140,9 @@ class BaseLearner(object):
         else:
             nme_accy = None
 
-        if save_conf:
-            _pred = y_pred.T[0]
-            _pred_path = os.path.join(self.args['logfilename'], "pred.npy")
-            _target_path = os.path.join(self.args['logfilename'], "target.npy")
-            np.save(_pred_path, _pred)
-            np.save(_target_path, y_true)
-
-            _save_dir = os.path.join(f"./results/conf_matrix/{self.args['prefix']}")
-            os.makedirs(_save_dir, exist_ok=True)
-            _save_path = os.path.join(_save_dir, f"{self.args['csv_name']}.csv")
-            with open(_save_path, "a+") as f:
-                f.write(f"{self.args['time_str']},{self.args['model_name']},{_pred_path},{_target_path} \n")
-
         return cnn_accy, nme_accy
     
-    def eval_task_per_domain(self, save_conf=False):
+    def eval_task_per_domain(self):
         cnn_accy_per_domain = {}
         nme_accy_per_domain = {}
         for domain_id, domain_name in enumerate(self.data_manager.domain_names):
@@ -154,7 +171,7 @@ class BaseLearner(object):
 
     def _train(self):
         pass
-
+    
     def _get_memory(self):
         if len(self._data_memory) == 0:
             return None
@@ -204,22 +221,24 @@ class BaseLearner(object):
     def _extract_vectors(self, loader):
         self._network.eval()
         vectors, targets = [], []
-        for _, _inputs, _targets in loader:
-            _targets = _targets.numpy()
-            if isinstance(self._network, nn.DataParallel):
-                _vectors = tensor2numpy(
-                    self._network.module.extract_vector(_inputs.to(self._device))
-                )
-            else:
-                _vectors = tensor2numpy(
-                    self._network.extract_vector(_inputs.to(self._device))
-                )
 
-            vectors.append(_vectors)
-            targets.append(_targets)
+        with torch.no_grad():
+            for _, _inputs, _targets in loader:
+                _targets = _targets.numpy()
+                if isinstance(self._network, nn.DataParallel):
+                    _vectors = tensor2numpy(
+                        self._network.module.extract_vector(_inputs.to(self._device))
+                    )
+                else:
+                    _vectors = tensor2numpy(
+                        self._network.extract_vector(_inputs.to(self._device))
+                    )
+
+                vectors.append(_vectors)
+                targets.append(_targets)
 
         return np.concatenate(vectors), np.concatenate(targets)
-
+    
     def _reduce_exemplar(self, data_manager, m):
         logging.info("Reducing exemplars...({} per classes)".format(m))
         dummy_data, dummy_targets = copy.deepcopy(self._data_memory), copy.deepcopy(
@@ -234,6 +253,7 @@ class BaseLearner(object):
                 dd, dt = dummy_data[mask], dummy_targets[mask]
             else:
                 dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
+            dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
             self._data_memory = (
                 np.concatenate((self._data_memory, dd))
                 if len(self._data_memory) != 0

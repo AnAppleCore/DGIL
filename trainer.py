@@ -1,18 +1,17 @@
-import copy
-import logging
-import os
 import sys
-
-import numpy as np
+import logging
+import copy
 import torch
 from utils import factory
 from utils.data import use_multi_domain_dataset
 from utils.data_manager import DataManager
 from utils.domain_data_manager import DomainDataManager
 from utils.toolkit import count_parameters
+import os
+import numpy as np
 
 
-def train(args):
+def train(args:dict):
     seed_list = copy.deepcopy(args["seed"])
     device = copy.deepcopy(args["device"])
 
@@ -22,7 +21,7 @@ def train(args):
         _train(args)
 
 
-def _train(args):
+def _train(args:dict):
 
     init_cls = 0 if args["init_cls"] == args["increment"] else args["init_cls"]
     logs_name = "logs/{}/{}/{}/{}".format(args["model_name"],args["dataset"], init_cls, args['increment'])
@@ -37,7 +36,7 @@ def _train(args):
         args["increment"],
         args["prefix"],
         args["seed"],
-        args["convnet_type"],
+        args["backbone_type"],
     )
     logging.basicConfig(
         level=logging.INFO,
@@ -48,27 +47,26 @@ def _train(args):
         ],
     )
 
-    _set_random()
+    _set_random(args["seed"])
     _set_device(args)
     print_args(args)
+
     if use_multi_domain_dataset(args["dataset"]):
-        data_manager = DomainDataManager(
-            args["dataset"],
-            args["shuffle"],
-            args["seed"],
-            args["init_cls"],
-            args["increment"],
-            enable_dgil = args.get("enable_dgil", False),
-            reference_domain_id = args.get("reference_domain_id", 0),
-        )
+        data_manager_cls = DomainDataManager
     else:
-        data_manager= DataManager(
-            args["dataset"],
-            args["shuffle"],
-            args["seed"],
-            args["init_cls"],
-            args["increment"],
-        )
+        data_manager_cls = DataManager
+
+    data_manager = data_manager_cls(
+        args["dataset"],
+        args["shuffle"],
+        args["seed"],
+        args["init_cls"],
+        args["increment"],
+        args,
+    )
+    
+    args["nb_classes"] = data_manager.nb_classes # update args
+    args["nb_tasks"] = data_manager.nb_tasks
     model = factory.get_model(args["model_name"], args)
     model.register_data_info(data_manager)
     logging.info("Class ID pairs: {}".format(model._class_id_pairs))
@@ -98,16 +96,13 @@ def _train(args):
             logging.info("CNN: {}".format(cnn_accy["grouped"]))
             logging.info("NME: {}".format(nme_accy["grouped"]))
 
-            cnn_keys = [key for key in cnn_accy["grouped"].keys() if '-' in key]
-            cnn_keys_sorted = sorted(cnn_keys)
-            cnn_values = [cnn_accy["grouped"][key] for key in cnn_keys_sorted]
+            cnn_keys = [key for key in cnn_accy["grouped"].keys() if '-' in key]    
+            cnn_values = [cnn_accy["grouped"][key] for key in cnn_keys]
             cnn_matrix.append(cnn_values)
 
             nme_keys = [key for key in nme_accy["grouped"].keys() if '-' in key]
-            nme_keys_sorted = sorted(nme_keys)
-            nme_values = [nme_accy["grouped"][key] for key in nme_keys_sorted]
+            nme_values = [nme_accy["grouped"][key] for key in nme_keys]
             nme_matrix.append(nme_values)
-
 
             cnn_curve["top1"].append(cnn_accy["top1"])
             cnn_curve[f"top{model.topk}"].append(cnn_accy[f"top{model.topk}"])
@@ -119,10 +114,6 @@ def _train(args):
             logging.info("CNN top{} curve: {}".format(model.topk, cnn_curve[f"top{model.topk}"]))
             logging.info("NME top1 curve: {}".format(nme_curve["top1"]))
             logging.info("NME top{} curve: {}\n".format(model.topk, nme_curve[f"top{model.topk}"]))
-
-            print('Average Accuracy (CNN):', sum(cnn_curve["top1"])/len(cnn_curve["top1"]))
-            print('Average Accuracy (NME):', sum(nme_curve["top1"])/len(nme_curve["top1"]))
-
             logging.info("Average Accuracy (CNN): {}".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))
             logging.info("Average Accuracy (NME): {}".format(sum(nme_curve["top1"])/len(nme_curve["top1"])))
         else:
@@ -130,8 +121,7 @@ def _train(args):
             logging.info("CNN: {}".format(cnn_accy["grouped"]))
 
             cnn_keys = [key for key in cnn_accy["grouped"].keys() if '-' in key]
-            cnn_keys_sorted = sorted(cnn_keys)
-            cnn_values = [cnn_accy["grouped"][key] for key in cnn_keys_sorted]
+            cnn_values = [cnn_accy["grouped"][key] for key in cnn_keys]
             cnn_matrix.append(cnn_values)
 
             cnn_curve["top1"].append(cnn_accy["top1"])
@@ -139,9 +129,7 @@ def _train(args):
 
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
             logging.info("CNN top{} curve: {}\n".format(model.topk, cnn_curve[f"top{model.topk}"]))
-
-            print('Average Accuracy (CNN):', sum(cnn_curve["top1"])/len(cnn_curve["top1"]))
-            logging.info("Average Accuracy (CNN): {}".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))
+            logging.info("Average Accuracy (CNN): {} \n".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))
 
 
         # report domain wise accuracy
@@ -174,10 +162,6 @@ def _train(args):
                     logging.info("Domain {}: CNN top{} curve: {}".format(domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
                     logging.info("Domain {}: NME top1 curve: {}".format(domain_name, nme_curve_per_domain[domain_name]["top1"]))
                     logging.info("Domain {}: NME top{} curve: {}\n".format(domain_name, model.topk, nme_curve_per_domain[domain_name][f"top{model.topk}"]))
-
-                    print('Domain {}: Average Accuracy (CNN):'.format(domain_name), sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"]))
-                    print('Domain {}: Average Accuracy (NME):'.format(domain_name), sum(nme_curve_per_domain[domain_name]["top1"])/len(nme_curve_per_domain[domain_name]["top1"]))
-
                     logging.info("Domain {}: Average Accuracy (CNN): {}".format(domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
                     logging.info("Domain {}: Average Accuracy (NME): {}".format(domain_name, sum(nme_curve_per_domain[domain_name]["top1"])/len(nme_curve_per_domain[domain_name]["top1"])))
                 else:
@@ -194,65 +178,62 @@ def _train(args):
 
                     logging.info("Domain {}: CNN top1 curve: {}".format(domain_name, cnn_curve_per_domain[domain_name]["top1"]))
                     logging.info("Domain {}: CNN top{} curve: {}\n".format(domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
-
-                    print('Domain {}: Average Accuracy (CNN):'.format(domain_name), sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"]))
                     logging.info("Domain {}: Average Accuracy (CNN): {}".format(domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
 
         model.after_task()
 
+    if args.get('print_forget', False):
+        # report global accuracy matrix and forgetting
+        if len(cnn_matrix) > 0:
+            np_acctable = np.zeros([task + 1, task + 1])
+            for idxx, line in enumerate(cnn_matrix):
+                idxy = len(line)
+                np_acctable[idxx, :idxy] = np.array(line)
+            np_acctable = np_acctable.T
+            forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+            # print('Accuracy Matrix (CNN):')
+            # print(np_acctable)
+            logging.info('Accuracy Matrix (CNN): \n{}'.format(np_acctable))
+            logging.info('Forgetting (CNN): {}'.format(forgetting))
+        if len(nme_matrix) > 0:
+            np_acctable = np.zeros([task + 1, task + 1])
+            for idxx, line in enumerate(nme_matrix):
+                idxy = len(line)
+                np_acctable[idxx, :idxy] = np.array(line)
+            np_acctable = np_acctable.T
+            forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+            # print('Accuracy Matrix (NME):')
+            # print(np_acctable)
+            logging.info('Accuracy Matrix (NME): \n{}'.format(np_acctable))
+            logging.info('Forgetting (NME): {}'.format(forgetting))
 
-    # report global accuracy matrix and forgetting
-    if len(cnn_matrix)>0:
-        np_acctable = np.zeros([task + 1, task + 1])
-        for idxx, line in enumerate(cnn_matrix):
-            idxy = len(line)
-            np_acctable[idxx, :idxy] = np.array(line)
-        np_acctable = np_acctable.T
-        forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-        print('Accuracy Matrix (CNN):')
-        print(np_acctable)
-        print('Forgetting (CNN):', forgetting)
-        logging.info('Forgetting (CNN): {}'.format(forgetting))
-    if len(nme_matrix)>0:
-        np_acctable = np.zeros([task + 1, task + 1])
-        for idxx, line in enumerate(nme_matrix):
-            idxy = len(line)
-            np_acctable[idxx, :idxy] = np.array(line)
-        np_acctable = np_acctable.T
-        forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-        print('Accuracy Matrix (NME):')
-        print(np_acctable)
-        print('Forgetting (NME):', forgetting)
-        logging.info('Forgetting (NME): {}'.format(forgetting))
-
-    
-    # report domain wise accuracy matrix and forgetting
-    if use_multi_domain_dataset(args["dataset"]):
-        for domain_name in data_manager.domain_names:
-            cnn_matrix = cnn_matrix_per_domain[domain_name]
-            if len(cnn_matrix)>0:
-                np_acctable = np.zeros([task + 1, task + 1])
-                for idxx, line in enumerate(cnn_matrix):
-                    idxy = len(line)
-                    np_acctable[idxx, :idxy] = np.array(line)
-                np_acctable = np_acctable.T
-                forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                print('Domain {}: Accuracy Matrix (CNN):'.format(domain_name))
-                print(np_acctable)
-                print('Domain {}: Forgetting (CNN):'.format(domain_name), forgetting)
-                logging.info('Domain {}: Forgetting (CNN): {}'.format(domain_name, forgetting))
-            nme_matrix = nme_matrix_per_domain[domain_name]
-            if len(nme_matrix)>0:
-                np_acctable = np.zeros([task + 1, task + 1])
-                for idxx, line in enumerate(nme_matrix):
-                    idxy = len(line)
-                    np_acctable[idxx, :idxy] = np.array(line)
-                np_acctable = np_acctable.T
-                forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                print('Domain {}: Accuracy Matrix (NME):'.format(domain_name))
-                print(np_acctable)
-                print('Domain {}: Forgetting (NME):'.format(domain_name), forgetting)
-                logging.info('Domain {}: Forgetting (NME): {}'.format(domain_name, forgetting))
+        # report domain wise accuracy matrix and forgetting
+        if use_multi_domain_dataset(args["dataset"]):
+            for domain_name in data_manager.domain_names:
+                cnn_matrix = cnn_matrix_per_domain[domain_name]
+                if len(cnn_matrix)>0:
+                    np_acctable = np.zeros([task + 1, task + 1])
+                    for idxx, line in enumerate(cnn_matrix):
+                        idxy = len(line)
+                        np_acctable[idxx, :idxy] = np.array(line)
+                    np_acctable = np_acctable.T
+                    forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                    # print('Domain {}: Accuracy Matrix (CNN):'.format(domain_name))
+                    # print(np_acctable)
+                    logging.info('Domain {}: Accuracy Matrix (CNN): \n{}'.format(domain_name, np_acctable))
+                    logging.info('Domain {}: Forgetting (CNN): {}'.format(domain_name, forgetting))
+                nme_matrix = nme_matrix_per_domain[domain_name]
+                if len(nme_matrix)>0:
+                    np_acctable = np.zeros([task + 1, task + 1])
+                    for idxx, line in enumerate(nme_matrix):
+                        idxy = len(line)
+                        np_acctable[idxx, :idxy] = np.array(line)
+                    np_acctable = np_acctable.T
+                    forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                    # print('Domain {}: Accuracy Matrix (NME):'.format(domain_name))
+                    # print(np_acctable)
+                    logging.info('Domain {}: Accuracy Matrix (NME): \n{}'.format(domain_name, np_acctable))
+                    logging.info('Domain {}: Forgetting (NME): {}'.format(domain_name, forgetting))
 
 
 def _set_device(args):
@@ -260,7 +241,7 @@ def _set_device(args):
     gpus = []
 
     for device in device_type:
-        if device_type == -1:
+        if device == -1:
             device = torch.device("cpu")
         else:
             device = torch.device("cuda:{}".format(device))
@@ -270,10 +251,10 @@ def _set_device(args):
     args["device"] = gpus
 
 
-def _set_random():
-    torch.manual_seed(1)
-    torch.cuda.manual_seed(1)
-    torch.cuda.manual_seed_all(1)
+def _set_random(seed=1):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 

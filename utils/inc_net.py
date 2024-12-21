@@ -1,61 +1,236 @@
 import copy
 import logging
-from typing import Any, Dict
-
 import torch
-from convs.ACL_buffer import RandomBuffer, activation_t
-from convs.cifar_resnet import resnet32
-from convs.linears import (CosineLinear, RecursiveLinear, SimpleLinear,
-                           SplitCosineLinear)
-from convs.memo_cifar_resnet import \
-    get_resnet32_a2fc as get_memo_resnet32  # for MEMO cifar
-from convs.memo_resnet import \
-    get_resnet18_imagenet as get_memo_resnet18  # for MEMO imagenet
-from convs.modified_represnet import resnet18_rep, resnet34_rep
-from convs.resnet import resnet18, resnet34, resnet50, resnet101, resnet152
-from convs.resnet_cbam import resnet18_cbam, resnet34_cbam, resnet50_cbam
-from convs.ucir_cifar_resnet import resnet32 as cosine_resnet32
-from convs.ucir_resnet import resnet18 as cosine_resnet18
-from convs.ucir_resnet import resnet34 as cosine_resnet34
-from convs.ucir_resnet import resnet50 as cosine_resnet50
 from torch import nn
+from backbone.linears import SimpleLinear, SplitCosineLinear, CosineLinear, EaseCosineLinear, SimpleContinualLinear
+from backbone.prompt import CodaPrompt
+import timm
 
+def get_backbone(args, pretrained=False):
+    name = args["backbone_type"].lower()
+    # SimpleCIL or SimpleCIL w/ Finetune
+    if name == "pretrained_vit_b16_224" or name == "vit_base_patch16_224":
+        model = timm.create_model("vit_base_patch16_224",pretrained=True, num_classes=0)
+        model.out_dim = 768
+        return model.eval()
+    elif name == "pretrained_vit_b16_224_in21k" or name == "vit_base_patch16_224_in21k":
+        model = timm.create_model("vit_base_patch16_224_in21k",pretrained=True, num_classes=0)
+        model.out_dim = 768
+        return model.eval()
 
-def get_convnet(args, pretrained=False):
-    name = args["convnet_type"].lower()
-    if name == "resnet32":
-        return resnet32()
-    elif name == "resnet18":
-        return resnet18(pretrained=pretrained,args=args)
-    elif name == "resnet34":
-        return resnet34(pretrained=pretrained,args=args)
-    elif name == "resnet50":
-        return resnet50(pretrained=pretrained,args=args)
-    elif name == "cosine_resnet18":
-        return cosine_resnet18(pretrained=pretrained,args=args)
-    elif name == "cosine_resnet32":
-        return cosine_resnet32()
-    elif name == "cosine_resnet34":
-        return cosine_resnet34(pretrained=pretrained,args=args)
-    elif name == "cosine_resnet50":
-        return cosine_resnet50(pretrained=pretrained,args=args)
-    elif name == "resnet18_rep":
-        return resnet18_rep(pretrained=pretrained,args=args)
-    elif name == "resnet18_cbam":
-        return resnet18_cbam(pretrained=pretrained,args=args)
-    elif name == "resnet34_cbam":
-        return resnet34_cbam(pretrained=pretrained,args=args)
-    elif name == "resnet50_cbam":
-        return resnet50_cbam(pretrained=pretrained,args=args)
+    elif '_memo' in name:
+        if args["model_name"] == "memo":
+            from backbone import vit_memo
+            _basenet, _adaptive_net = timm.create_model("vit_base_patch16_224_memo", pretrained=True, num_classes=0)
+            _basenet.out_dim = 768
+            _adaptive_net.out_dim = 768
+            return _basenet, _adaptive_net
+    # SSF 
+    elif '_ssf' in name:
+        if args["model_name"] == "aper_ssf"  or args["model_name"] == "ranpac" or args["model_name"] == "fecam":
+            from backbone import vit_ssf
+            if name == "pretrained_vit_b16_224_ssf":
+                model = timm.create_model("vit_base_patch16_224_ssf", pretrained=True, num_classes=0)
+                model.out_dim = 768
+            elif name == "pretrained_vit_b16_224_in21k_ssf":
+                model = timm.create_model("vit_base_patch16_224_in21k_ssf", pretrained=True, num_classes=0)
+                model.out_dim = 768
+            return model.eval()
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
     
-    # MEMO benchmark backbone
-    elif name == 'memo_resnet18':
-        _basenet, _adaptive_net = get_memo_resnet18()
-        return _basenet, _adaptive_net
-    elif name == 'memo_resnet32':
-        _basenet, _adaptive_net = get_memo_resnet32()
-        return _basenet, _adaptive_net
-    
+    # VPT
+    elif '_vpt' in name:
+        if args["model_name"] == "aper_vpt"  or args["model_name"] == "ranpac" or args["model_name"] == "fecam":
+            from backbone.vpt import build_promptmodel
+            if name == "pretrained_vit_b16_224_vpt":
+                basicmodelname = "vit_base_patch16_224" 
+            elif name == "pretrained_vit_b16_224_in21k_vpt":
+                basicmodelname = "vit_base_patch16_224_in21k"
+            
+            print("modelname,", name, "basicmodelname", basicmodelname)
+            VPT_type = "Deep"
+            if args["vpt_type"] == 'shallow':
+                VPT_type = "Shallow"
+            Prompt_Token_num = args["prompt_token_num"]
+
+            model = build_promptmodel(modelname=basicmodelname, Prompt_Token_num=Prompt_Token_num, VPT_type=VPT_type)
+            prompt_state_dict = model.obtain_prompt()
+            model.load_prompt(prompt_state_dict)
+            model.out_dim = 768
+            return model.eval()
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+
+    elif '_adapter' in name:
+        ffn_num = args["ffn_num"]
+        if args["model_name"] == "aper_adapter" or args["model_name"] == "ranpac" or args["model_name"] == "fecam":
+            from backbone import vit_adapter
+            from easydict import EasyDict
+            tuning_config = EasyDict(
+                # AdaptFormer
+                ffn_adapt=True,
+                ffn_option="parallel",
+                ffn_adapter_layernorm_option="none",
+                ffn_adapter_init_option="lora",
+                ffn_adapter_scalar="0.1",
+                ffn_num=ffn_num,
+                d_model=768,
+                # VPT related
+                vpt_on=False,
+                vpt_num=0,
+            )
+            if name == "pretrained_vit_b16_224_adapter":
+                model = vit_adapter.vit_base_patch16_224_adapter(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_in21k_adapter":
+                model = vit_adapter.vit_base_patch16_224_in21k_adapter(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            else:
+                raise NotImplementedError("Unknown type {}".format(name))
+            return model.eval()
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+    # L2P
+    elif '_l2p' in name:
+        if args["model_name"] == "l2p":
+            from backbone import vit_l2p
+            model = timm.create_model(
+                args["backbone_type"],
+                pretrained=args["pretrained"],
+                num_classes=args["nb_classes"],
+                drop_rate=args["drop"],
+                drop_path_rate=args["drop_path"],
+                drop_block_rate=None,
+                prompt_length=args["length"],
+                embedding_key=args["embedding_key"],
+                prompt_init=args["prompt_key_init"],
+                prompt_pool=args["prompt_pool"],
+                prompt_key=args["prompt_key"],
+                pool_size=args["size"],
+                top_k=args["top_k"],
+                batchwise_prompt=args["batchwise_prompt"],
+                prompt_key_init=args["prompt_key_init"],
+                head_type=args["head_type"],
+                use_prompt_mask=args["use_prompt_mask"],
+            )
+            return model
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+    # dualprompt
+    elif '_dualprompt' in name:
+        if args["model_name"] == "dualprompt":
+            from backbone import vit_dualprompt
+            model = timm.create_model(
+                args["backbone_type"],
+                pretrained=args["pretrained"],
+                num_classes=args["nb_classes"],
+                drop_rate=args["drop"],
+                drop_path_rate=args["drop_path"],
+                drop_block_rate=None,
+                prompt_length=args["length"],
+                embedding_key=args["embedding_key"],
+                prompt_init=args["prompt_key_init"],
+                prompt_pool=args["prompt_pool"],
+                prompt_key=args["prompt_key"],
+                pool_size=args["size"],
+                top_k=args["top_k"],
+                batchwise_prompt=args["batchwise_prompt"],
+                prompt_key_init=args["prompt_key_init"],
+                head_type=args["head_type"],
+                use_prompt_mask=args["use_prompt_mask"],
+                use_g_prompt=args["use_g_prompt"],
+                g_prompt_length=args["g_prompt_length"],
+                g_prompt_layer_idx=args["g_prompt_layer_idx"],
+                use_prefix_tune_for_g_prompt=args["use_prefix_tune_for_g_prompt"],
+                use_e_prompt=args["use_e_prompt"],
+                e_prompt_layer_idx=args["e_prompt_layer_idx"],
+                use_prefix_tune_for_e_prompt=args["use_prefix_tune_for_e_prompt"],
+                same_key_value=args["same_key_value"],
+            )
+            return model
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+    # Coda_Prompt
+    elif '_coda_prompt' in name:
+        if args["model_name"] == "coda_prompt":
+            from backbone import vit_coda_promtpt
+            model = timm.create_model(args["backbone_type"], pretrained=args["pretrained"])
+            # model = vision_transformer_coda_prompt.VisionTransformer(img_size=224, patch_size=16, embed_dim=768, depth=12,
+            #                 num_heads=12, ckpt_layer=0,
+            #                 drop_path_rate=0)
+            # from timm.models import vit_base_patch16_224
+            # load_dict = vit_base_patch16_224(pretrained=True).state_dict()
+            # del load_dict['head.weight']; del load_dict['head.bias']
+            # model.load_state_dict(load_dict)
+            return model
+    elif '_ease' in name:
+        ffn_num = args["ffn_num"]
+        if args["model_name"] == "ease" :
+            from backbone import vit_ease
+            from easydict import EasyDict
+            tuning_config = EasyDict(
+                # AdaptFormer
+                ffn_adapt=True,
+                ffn_option="parallel",
+                ffn_adapter_layernorm_option="none",
+                ffn_adapter_init_option="lora",
+                ffn_adapter_scalar="0.1",
+                ffn_num=ffn_num,
+                d_model=768,
+                # VPT related
+                vpt_on=False,
+                vpt_num=0,
+                _device = args["device"][0]
+            )
+            if name == "vit_base_patch16_224_ease":
+                model = vit_ease.vit_base_patch16_224_ease(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "vit_base_patch16_224_in21k_ease":
+                model = vit_ease.vit_base_patch16_224_in21k_ease(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            else:
+                raise NotImplementedError("Unknown type {}".format(name))
+            return model.eval()
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+    elif '_lae' in name:
+        from backbone import vit_lae
+        model = timm.create_model(args["backbone_type"], pretrained=True)
+        return model
+    elif '_mos' in name:
+        ffn_num = args["ffn_num"]
+        if args["model_name"] == "mos":
+            from backbone import vit_mos
+            from easydict import EasyDict
+            tuning_config = EasyDict(
+                # AdaptFormer
+                ffn_adapt=True,
+                ffn_option="parallel",
+                ffn_adapter_layernorm_option="none",
+                ffn_adapter_init_option="lora",
+                ffn_adapter_scalar="0.1",
+                ffn_num=ffn_num,
+                d_model=768,
+                _device = args["device"][0],
+                adapter_momentum = args["adapter_momentum"],
+                # VPT related
+                vpt_on=False,
+                vpt_num=0,
+            )
+            if name == "vit_base_patch16_224_mos":
+                model = vit_mos.vit_base_patch16_224_mos(num_classes=args["nb_classes"],
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+            elif name == "vit_base_patch16_224_in21k_mos":
+                model = vit_mos.vit_base_patch16_224_in21k_mos(num_classes=args["nb_classes"],
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+            else:
+                raise NotImplementedError("Unknown type {}".format(name))
+            return model
     else:
         raise NotImplementedError("Unknown type {}".format(name))
 
@@ -64,27 +239,43 @@ class BaseNet(nn.Module):
     def __init__(self, args, pretrained):
         super(BaseNet, self).__init__()
 
-        self.convnet = get_convnet(args, pretrained)
+        print('This is for the BaseNet initialization.')
+        self.backbone = get_backbone(args, pretrained)
+        print('After BaseNet initialization.')
         self.fc = None
+        self._device = args["device"][0]
+
+        if 'resnet' in args['backbone_type']:
+            self.model_type = 'cnn'
+        else:
+            self.model_type = 'vit'
 
     @property
     def feature_dim(self):
-        return self.convnet.out_dim
+        return self.backbone.out_dim
 
     def extract_vector(self, x):
-        return self.convnet(x)["features"]
+        if self.model_type == 'cnn':
+            self.backbone(x)['features']
+        else:
+            return self.backbone(x)
 
     def forward(self, x):
-        x = self.convnet(x)
-        out = self.fc(x["features"])
-        """
-        {
-            'fmaps': [x_1, x_2, ..., x_n],
-            'features': features
-            'logits': logits
-        }
-        """
-        out.update(x)
+        if self.model_type == 'cnn':
+            x = self.backbone(x)
+            out = self.fc(x['features'])
+            """
+            {
+                'fmaps': [x_1, x_2, ..., x_n],
+                'features': features
+                'logits': logits
+            }
+            """
+            out.update(x)
+        else:
+            x = self.backbone(x)
+            out = self.fc(x)
+            out.update({"features": x})
 
         return out
 
@@ -103,24 +294,7 @@ class BaseNet(nn.Module):
         self.eval()
 
         return self
-    
-    def load_checkpoint(self, args):
-        if args["init_cls"] == 50:
-            pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
-                args["dataset"],
-                args["seed"],
-                args["convnet_type"],
-                0,
-                args["init_cls"],
-            )
-            checkpoint_name = f"checkpoints/finetune_{pkl_name}_0.pkl"
-        else:
-            checkpoint_name = f"checkpoints/finetune_{args['csv_name']}_0.pkl"
-        model_infos = torch.load(checkpoint_name)
-        self.convnet.load_state_dict(model_infos['convnet'])
-        self.fc.load_state_dict(model_infos['fc'])
-        test_acc = model_infos['test_acc']
-        return test_acc
+
 
 class IncrementalNet(BaseNet):
     def __init__(self, args, pretrained, gradcam=False):
@@ -154,17 +328,21 @@ class IncrementalNet(BaseNet):
 
     def generate_fc(self, in_dim, out_dim):
         fc = SimpleLinear(in_dim, out_dim)
-
         return fc
 
     def forward(self, x):
-        x = self.convnet(x)
-        out = self.fc(x["features"])
-        out.update(x)
+        if self.model_type == 'cnn':
+            x = self.backbone(x)
+            out = self.fc(x["features"])
+            out.update(x)
+        else:
+            x = self.backbone(x)
+            out = self.fc(x)
+            out.update({"features": x})
+
         if hasattr(self, "gradcam") and self.gradcam:
             out["gradcam_gradients"] = self._gradcam_gradients
             out["gradcam_activations"] = self._gradcam_activations
-
         return out
 
     def unset_gradcam_hook(self):
@@ -185,24 +363,13 @@ class IncrementalNet(BaseNet):
             self._gradcam_activations[0] = output
             return None
 
-        self._gradcam_hooks[0] = self.convnet.last_conv.register_backward_hook(
+        self._gradcam_hooks[0] = self.backbone.last_conv.register_backward_hook(
             backward_hook
         )
-        self._gradcam_hooks[1] = self.convnet.last_conv.register_forward_hook(
+        self._gradcam_hooks[1] = self.backbone.last_conv.register_forward_hook(
             forward_hook
         )
 
-class IL2ANet(IncrementalNet):
-
-    def update_fc(self, num_old, num_total, num_aux):
-        fc = self.generate_fc(self.feature_dim, num_total+num_aux)
-        if self.fc is not None:
-            weight = copy.deepcopy(self.fc.weight.data)
-            bias = copy.deepcopy(self.fc.bias.data)
-            fc.weight.data[:num_old] = weight[:num_old]
-            fc.bias.data[:num_old] = bias[:num_old]
-        del self.fc
-        self.fc = fc
 
 class CosineIncrementalNet(BaseNet):
     def __init__(self, args, pretrained, nb_proxy=1):
@@ -212,7 +379,7 @@ class CosineIncrementalNet(BaseNet):
     def update_fc(self, nb_classes, task_num):
         fc = self.generate_fc(self.feature_dim, nb_classes)
         if self.fc is not None:
-            if task_num == 1:
+            if task_num  ==  1:
                 fc.fc1.weight.data = self.fc.weight.data
                 fc.sigma.data = self.fc.sigma.data
             else:
@@ -236,86 +403,11 @@ class CosineIncrementalNet(BaseNet):
 
         return fc
 
-
-class BiasLayer_BIC(nn.Module):
-    def __init__(self):
-        super(BiasLayer_BIC, self).__init__()
-        self.alpha = nn.Parameter(torch.ones(1, requires_grad=True))
-        self.beta = nn.Parameter(torch.zeros(1, requires_grad=True))
-
-    def forward(self, x, low_range, high_range):
-        ret_x = x.clone()
-        ret_x[:, low_range:high_range] = (
-            self.alpha * x[:, low_range:high_range] + self.beta
-        )
-        return ret_x
-
-    def get_params(self):
-        return (self.alpha.item(), self.beta.item())
-
-
-class IncrementalNetWithBias(BaseNet):
-    def __init__(self, args, pretrained, bias_correction=False):
-        super().__init__(args, pretrained)
-
-        # Bias layer
-        self.bias_correction = bias_correction
-        self.bias_layers = nn.ModuleList([])
-        self.task_sizes = []
-
-    def forward(self, x):
-        x = self.convnet(x)
-        out = self.fc(x["features"])
-        if self.bias_correction:
-            logits = out["logits"]
-            for i, layer in enumerate(self.bias_layers):
-                logits = layer(
-                    logits, sum(self.task_sizes[:i]), sum(self.task_sizes[: i + 1])
-                )
-            out["logits"] = logits
-
-        out.update(x)
-
-        return out
-
-    def update_fc(self, nb_classes):
-        fc = self.generate_fc(self.feature_dim, nb_classes)
-        if self.fc is not None:
-            nb_output = self.fc.out_features
-            weight = copy.deepcopy(self.fc.weight.data)
-            bias = copy.deepcopy(self.fc.bias.data)
-            fc.weight.data[:nb_output] = weight
-            fc.bias.data[:nb_output] = bias
-
-        del self.fc
-        self.fc = fc
-
-        new_task_size = nb_classes - sum(self.task_sizes)
-        self.task_sizes.append(new_task_size)
-        self.bias_layers.append(BiasLayer_BIC())
-
-    def generate_fc(self, in_dim, out_dim):
-        fc = SimpleLinear(in_dim, out_dim)
-
-        return fc
-
-    def get_bias_params(self):
-        params = []
-        for layer in self.bias_layers:
-            params.append(layer.get_params())
-
-        return params
-
-    def unfreeze(self):
-        for param in self.parameters():
-            param.requires_grad = True
-
-
 class DERNet(nn.Module):
     def __init__(self, args, pretrained):
         super(DERNet, self).__init__()
-        self.convnet_type = args["convnet_type"]
-        self.convnets = nn.ModuleList()
+        self.backbone_type = args["backbone_type"]
+        self.backbones = nn.ModuleList()
         self.pretrained = pretrained
         self.out_dim = None
         self.fc = None
@@ -323,22 +415,33 @@ class DERNet(nn.Module):
         self.task_sizes = []
         self.args = args
 
+        if 'resnet' in args['backbone_type']:
+            self.model_type = 'cnn'
+        else:
+            self.model_type = 'vit'
+
     @property
     def feature_dim(self):
         if self.out_dim is None:
             return 0
-        return self.out_dim * len(self.convnets)
+        return self.out_dim * len(self.backbones)
 
     def extract_vector(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if self.model_type == 'cnn':
+            features = [backbone(x)["features"] for backbone in self.backbones]
+        else:
+            features = [backbone(x) for backbone in self.backbones]
         features = torch.cat(features, 1)
         return features
 
     def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if self.model_type == 'cnn':
+            features = [backbone(x)["features"] for backbone in self.backbones]
+        else:
+            features = [backbone(x) for backbone in self.backbones]
         features = torch.cat(features, 1)
 
-        out = self.fc(features)  # {logics: self.fc(features)}
+        out = self.fc(features)  # {logits: self.fc(features)}
 
         aux_logits = self.aux_fc(features[:, -self.out_dim :])["logits"]
 
@@ -353,14 +456,14 @@ class DERNet(nn.Module):
         """
 
     def update_fc(self, nb_classes):
-        if len(self.convnets) == 0:
-            self.convnets.append(get_convnet(self.args))
+        if len(self.backbones) == 0:
+            self.backbones.append(get_backbone(self.args, self.pretrained))
         else:
-            self.convnets.append(get_convnet(self.args))
-            self.convnets[-1].load_state_dict(self.convnets[-2].state_dict())
+            self.backbones.append(get_backbone(self.args, self.pretrained))
+            self.backbones[-1].load_state_dict(self.backbones[-2].state_dict())
 
         if self.out_dim is None:
-            self.out_dim = self.convnets[-1].out_dim
+            self.out_dim = self.backbones[-1].out_dim
         fc = self.generate_fc(self.feature_dim, nb_classes)
         if self.fc is not None:
             nb_output = self.fc.out_features
@@ -392,10 +495,10 @@ class DERNet(nn.Module):
 
         return self
 
-    def freeze_conv(self):
-        for param in self.convnets.parameters():
+    def freeze_backbone(self):
+        for param in self.backbones.parameters():
             param.requires_grad = False
-        self.convnets.eval()
+        self.backbones.eval()
 
     def weight_align(self, increment):
         weights = self.fc.weight.data
@@ -410,28 +513,26 @@ class DERNet(nn.Module):
     def load_checkpoint(self, args):
         checkpoint_name = f"checkpoints/finetune_{args['csv_name']}_0.pkl"
         model_infos = torch.load(checkpoint_name)
-        assert len(self.convnets) == 1
-        self.convnets[0].load_state_dict(model_infos['convnet'])
+        assert len(self.backbones) == 1
+        self.backbones[0].load_state_dict(model_infos['backbone'])
         self.fc.load_state_dict(model_infos['fc'])
         test_acc = model_infos['test_acc']
         return test_acc
-
 
 class SimpleCosineIncrementalNet(BaseNet):
     def __init__(self, args, pretrained):
         super().__init__(args, pretrained)
 
     def update_fc(self, nb_classes, nextperiod_initialization=None):
-        fc = self.generate_fc(self.feature_dim, nb_classes).cuda()
+        fc = self.generate_fc(self.feature_dim, nb_classes).to(self._device)
         if self.fc is not None:
             nb_output = self.fc.out_features
             weight = copy.deepcopy(self.fc.weight.data)
             fc.sigma.data = self.fc.sigma.data
             if nextperiod_initialization is not None:
-
                 weight = torch.cat([weight, nextperiod_initialization])
             else:
-                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).cuda()])
+                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).to(self._device)])
             fc.weight = nn.Parameter(weight)
         del self.fc
         self.fc = fc
@@ -440,29 +541,127 @@ class SimpleCosineIncrementalNet(BaseNet):
         fc = CosineLinear(in_dim, out_dim)
         return fc
 
-    def regenerate_fc(self, nb_classes):
-        fc = self.generate_fc(self.feature_dim, nb_classes).cuda()
+
+class SimpleVitNet(BaseNet):
+    def __init__(self, args, pretrained):
+        super().__init__(args, pretrained)
+        # for RanPAC
+        self.W_rand = None
+        self.RP_dim = None
+
+    def update_fc(self, nb_classes, nextperiod_initialization=None):
+        if self.RP_dim is not None:
+            feature_dim = self.RP_dim
+        else:
+            feature_dim = self.feature_dim
+        fc = self.generate_fc(feature_dim, nb_classes).to(self._device)
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            fc.sigma.data = self.fc.sigma.data
+            if nextperiod_initialization is not None:
+                weight = torch.cat([weight, nextperiod_initialization])
+            else:
+                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, feature_dim).to(self._device)])
+            fc.weight = nn.Parameter(weight)
         del self.fc
         self.fc = fc
+
+    def generate_fc(self, in_dim, out_dim):
+        fc = CosineLinear(in_dim, out_dim)
         return fc
+
+    def extract_vector(self, x):
+        return self.backbone(x)
+
+    def forward(self, x):
+        x = self.backbone(x)
+        if self.W_rand is not None:
+            x = torch.nn.functional.relu(x @ self.W_rand)
+        out = self.fc(x)
+        out.update({"features": x})
+        return out
+
+# l2p and dualprompt
+class PromptVitNet(nn.Module):
+    def __init__(self, args, pretrained):
+        super(PromptVitNet, self).__init__()
+        self.backbone = get_backbone(args, pretrained)
+        if args["get_original_backbone"]:
+            self.original_backbone = self.get_original_backbone(args)
+        else:
+            self.original_backbone = None
+            
+    def get_original_backbone(self, args):
+        return timm.create_model(
+            args["backbone_type"],
+            pretrained=args["pretrained"],
+            num_classes=args["nb_classes"],
+            drop_rate=args["drop"],
+            drop_path_rate=args["drop_path"],
+            drop_block_rate=None,
+        ).eval()
+
+    def forward(self, x, task_id=-1, train=False):
+        with torch.no_grad():
+            if self.original_backbone is not None:
+                cls_features = self.original_backbone(x)['pre_logits']
+            else:
+                cls_features = None
+
+        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
+        return x
+
+# coda_prompt
+class CodaPromptVitNet(nn.Module):
+    def __init__(self, args, pretrained):
+        super(CodaPromptVitNet, self).__init__()
+        self.args = args
+        self.backbone = get_backbone(args, pretrained)
+        self.fc = nn.Linear(768, args["nb_classes"])
+        self.prompt = CodaPrompt(768, args["nb_tasks"], args["prompt_param"])
+
+    # pen: get penultimate features  
+    def forward(self, x, pen=False, train=False):
+        if self.prompt is not None:
+            with torch.no_grad():
+                q, _ = self.backbone(x)
+                q = q[:,0,:]
+            out, prompt_loss = self.backbone(x, prompt=self.prompt, q=q, train=train)
+            out = out[:,0,:]
+        else:
+            out, _ = self.backbone(x)
+            out = out[:,0,:]
+        out = out.view(out.size(0), -1)
+        if not pen:
+            out = self.fc(out)
+        if self.prompt is not None and train:
+            return out, prompt_loss
+        else:
+            return out
+
 
 class MultiBranchCosineIncrementalNet(BaseNet):
     def __init__(self, args, pretrained):
         super().__init__(args, pretrained)
-
-        # no need the convnet.
-
-        print(
-            'Clear the convnet in MultiBranchCosineIncrementalNet, since we are using self.convnets with dual branches')
-        self.convnet = torch.nn.Identity()
-        for param in self.convnet.parameters():
+        
+        # no need the backbone.
+        
+        print('Clear the backbone in MultiBranchCosineIncrementalNet, since we are using self.backbones with dual branches')
+        self.backbone=torch.nn.Identity()
+        for param in self.backbone.parameters():
             param.requires_grad = False
 
-        self.convnets = nn.ModuleList()
-        self.args = args
+        self.backbones = nn.ModuleList()
+        self.args=args
+        
+        if 'resnet' in args['backbone_type']:
+            self.model_type='cnn'
+        else:
+            self.model_type='vit'
 
     def update_fc(self, nb_classes, nextperiod_initialization=None):
-        fc = self.generate_fc(self._feature_dim, nb_classes).cuda()
+        fc = self.generate_fc(self._feature_dim, nb_classes).to(self._device)
         if self.fc is not None:
             nb_output = self.fc.out_features
             weight = copy.deepcopy(self.fc.weight.data)
@@ -470,7 +669,7 @@ class MultiBranchCosineIncrementalNet(BaseNet):
             if nextperiod_initialization is not None:
                 weight = torch.cat([weight, nextperiod_initialization])
             else:
-                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self._feature_dim).cuda()])
+                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self._feature_dim).to(self._device)])
             fc.weight = nn.Parameter(weight)
         del self.fc
         self.fc = fc
@@ -478,28 +677,51 @@ class MultiBranchCosineIncrementalNet(BaseNet):
     def generate_fc(self, in_dim, out_dim):
         fc = CosineLinear(in_dim, out_dim)
         return fc
+    
 
     def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if self.model_type == 'cnn':
+            features = [backbone(x)["features"] for backbone in self.backbones]
+        else:
+            features = [backbone(x) for backbone in self.backbones]       
+
         features = torch.cat(features, 1)
         # import pdb; pdb.set_trace()
         out = self.fc(features)
         out.update({"features": features})
         return out
 
-    def construct_dual_branch_network(self, trained_model, tuned_model, cls_num):
-        self.convnets.append(trained_model.convnet)
-        self.convnets.append(tuned_model.convnet)
+    
+    def construct_dual_branch_network(self, tuned_model):
+        if 'ssf' in self.args['backbone_type']:
+            newargs=copy.deepcopy(self.args)
+            newargs['backbone_type']=newargs['backbone_type'].replace('_ssf','')
+            print(newargs['backbone_type'])
+            self.backbones.append(get_backbone(newargs)) #pretrained model without scale
+        elif 'vpt' in self.args['backbone_type']:
+            newargs=copy.deepcopy(self.args)
+            newargs['backbone_type']=newargs['backbone_type'].replace('_vpt','')
+            print(newargs['backbone_type'])
+            self.backbones.append(get_backbone(newargs)) #pretrained model without vpt
+        elif 'adapter' in self.args['backbone_type']:
+            newargs=copy.deepcopy(self.args)
+            newargs['backbone_type']=newargs['backbone_type'].replace('_adapter','')
+            print(newargs['backbone_type'])
+            self.backbones.append(get_backbone(newargs)) #pretrained model without adapter
+        else:
+            self.backbones.append(get_backbone(self.args)) #the pretrained model itself
 
-        self._feature_dim = self.convnets[0].out_dim * len(self.convnets)
-        self.fc = self.generate_fc(self._feature_dim, cls_num)
+        self.backbones.append(tuned_model.backbone) #adappted tuned model
+    
+        self._feature_dim = self.backbones[0].out_dim * len(self.backbones) 
+        self.fc=self.generate_fc(self._feature_dim,self.args['init_cls'])
 
 
 class FOSTERNet(nn.Module):
     def __init__(self, args, pretrained):
         super(FOSTERNet, self).__init__()
-        self.convnet_type = args["convnet_type"]
-        self.convnets = nn.ModuleList()
+        self.backbone_type = args["backbone_type"]
+        self.backbones = nn.ModuleList()
         self.pretrained = pretrained
         self.out_dim = None
         self.fc = None
@@ -508,19 +730,30 @@ class FOSTERNet(nn.Module):
         self.oldfc = None
         self.args = args
 
+        if 'resnet' in args['backbone_type']:
+            self.model_type = 'cnn'
+        else:
+            self.model_type = 'vit'
+
     @property
     def feature_dim(self):
         if self.out_dim is None:
             return 0
-        return self.out_dim * len(self.convnets)
+        return self.out_dim * len(self.backbones)
 
     def extract_vector(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if self.model_type == 'cnn':
+            features = [backbone(x)["features"] for backbone in self.backbones]
+        else:
+            features = [backbone(x) for backbone in self.backbones]
         features = torch.cat(features, 1)
         return features
 
     def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if self.model_type == 'cnn':
+            features = [backbone(x)["features"] for backbone in self.backbones]
+        else:
+            features = [backbone(x) for backbone in self.backbones]
         features = torch.cat(features, 1)
         out = self.fc(features)
         fe_logits = self.fe_fc(features[:, -self.out_dim :])["logits"]
@@ -535,9 +768,9 @@ class FOSTERNet(nn.Module):
         return out
 
     def update_fc(self, nb_classes):
-        self.convnets.append(get_convnet(self.args))
+        self.backbones.append(get_backbone(self.args, self.pretrained))
         if self.out_dim is None:
-            self.out_dim = self.convnets[-1].out_dim
+            self.out_dim = self.backbones[-1].out_dim
         fc = self.generate_fc(self.feature_dim, nb_classes)
         if self.fc is not None:
             nb_output = self.fc.out_features
@@ -545,7 +778,7 @@ class FOSTERNet(nn.Module):
             bias = copy.deepcopy(self.fc.bias.data)
             fc.weight.data[:nb_output, : self.feature_dim - self.out_dim] = weight
             fc.bias.data[:nb_output] = bias
-            self.convnets[-1].load_state_dict(self.convnets[-2].state_dict())
+            self.backbones[-1].load_state_dict(self.backbones[-2].state_dict())
 
         self.oldfc = self.fc
         self.fc = fc
@@ -573,10 +806,10 @@ class FOSTERNet(nn.Module):
         self.eval()
         return self
 
-    def freeze_conv(self):
-        for param in self.convnets.parameters():
+    def freeze_backbone(self):
+        for param in self.backbones.parameters():
             param.requires_grad = False
-        self.convnets.eval()
+        self.backbones.eval()
 
     def weight_align(self, old, increment, value):
         weights = self.fc.weight.data
@@ -593,7 +826,7 @@ class FOSTERNet(nn.Module):
             pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
                 args["dataset"],
                 args["seed"],
-                args["convnet_type"],
+                args["backbone_type"],
                 0,
                 args["init_cls"],
             )
@@ -601,160 +834,17 @@ class FOSTERNet(nn.Module):
         else:
             checkpoint_name = f"checkpoints/finetune_{args['csv_name']}_0.pkl"
         model_infos = torch.load(checkpoint_name)
-        assert len(self.convnets) == 1
-        self.convnets[0].load_state_dict(model_infos['convnet'])
+        assert len(self.backbones) == 1
+        self.backbones[0].load_state_dict(model_infos['backbone'])
         self.fc.load_state_dict(model_infos['fc'])
         test_acc = model_infos['test_acc']
         return test_acc
-    
-
-class BiasLayer(nn.Module):
-    def __init__(self):
-        super(BiasLayer, self).__init__()
-        self.alpha = nn.Parameter(torch.zeros(1, requires_grad=True))
-        self.beta = nn.Parameter(torch.zeros(1, requires_grad=True))
-
-    def forward(self, x , bias=True):
-        ret_x = x.clone()
-        ret_x = (self.alpha+1) * x # + self.beta
-        if bias:
-            ret_x = ret_x + self.beta
-        return ret_x
-
-    def get_params(self):
-        return (self.alpha.item(), self.beta.item())
-
-
-class BEEFISONet(nn.Module):
-    def __init__(self, args, pretrained):
-        super(BEEFISONet, self).__init__()
-        self.convnet_type = args["convnet_type"]
-        self.convnets = nn.ModuleList()
-        self.pretrained = pretrained
-        self.out_dim = None
-        self.old_fc = None
-        self.new_fc = None
-        self.task_sizes = []
-        self.forward_prototypes = None
-        self.backward_prototypes = None
-        self.args = args
-        self.biases = nn.ModuleList()
-
-    @property
-    def feature_dim(self):
-        if self.out_dim is None:
-            return 0
-        return self.out_dim * len(self.convnets)
-
-    def extract_vector(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
-        features = torch.cat(features, 1)
-        return features
-
-    def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
-        features = torch.cat(features, 1)
-        
-        if self.old_fc is None:
-            fc = self.new_fc
-            out = fc(features)
-        else:
-            '''
-            merge the weights
-            '''
-            new_task_size = self.task_sizes[-1]
-            fc_weight = torch.cat([self.old_fc.weight,torch.zeros((new_task_size,self.feature_dim-self.out_dim)).cuda()],dim=0)             
-            new_fc_weight = self.new_fc.weight
-            new_fc_bias = self.new_fc.bias
-            for i in range(len(self.task_sizes)-2,-1,-1):
-                new_fc_weight = torch.cat([*[self.biases[i](self.backward_prototypes.weight[i].unsqueeze(0),bias=False) for _ in range(self.task_sizes[i])],new_fc_weight],dim=0)
-                new_fc_bias = torch.cat([*[self.biases[i](self.backward_prototypes.bias[i].unsqueeze(0),bias=True) for _ in range(self.task_sizes[i])], new_fc_bias])
-            fc_weight = torch.cat([fc_weight,new_fc_weight],dim=1)
-            fc_bias = torch.cat([self.old_fc.bias,torch.zeros(new_task_size).cuda()])
-            fc_bias=+new_fc_bias
-            logits = features@fc_weight.permute(1,0)+fc_bias
-            out = {"logits":logits}        
-
-            new_fc_weight = self.new_fc.weight
-            new_fc_bias = self.new_fc.bias
-            for i in range(len(self.task_sizes)-2,-1,-1):
-                new_fc_weight = torch.cat([self.backward_prototypes.weight[i].unsqueeze(0),new_fc_weight],dim=0)
-                new_fc_bias = torch.cat([self.backward_prototypes.bias[i].unsqueeze(0), new_fc_bias])
-            out["train_logits"] = features[:,-self.out_dim:]@new_fc_weight.permute(1,0)+new_fc_bias 
-        out.update({"eval_logits": out["logits"],"energy_logits":self.forward_prototypes(features[:,-self.out_dim:])["logits"]})
-        return out
-
-    def update_fc_before(self, nb_classes):
-        new_task_size = nb_classes - sum(self.task_sizes)
-        self.biases = nn.ModuleList([BiasLayer() for i in range(len(self.task_sizes))])
-        self.convnets.append(get_convnet(self.args))
-        if self.out_dim is None:
-            self.out_dim = self.convnets[-1].out_dim
-        if self.new_fc is not None:
-            self.fe_fc = self.generate_fc(self.out_dim, nb_classes)
-            self.backward_prototypes = self.generate_fc(self.out_dim,len(self.task_sizes))
-            self.convnets[-1].load_state_dict(self.convnets[0].state_dict())
-        self.forward_prototypes = self.generate_fc(self.out_dim, nb_classes)
-        self.new_fc = self.generate_fc(self.out_dim,new_task_size)
-        self.task_sizes.append(new_task_size)
-    def generate_fc(self, in_dim, out_dim):
-        fc = SimpleLinear(in_dim, out_dim)
-        return fc
-    
-    def update_fc_after(self):
-        if self.old_fc is not None:
-            old_fc = self.generate_fc(self.feature_dim, sum(self.task_sizes))
-            new_task_size = self.task_sizes[-1]
-            old_fc.weight.data = torch.cat([self.old_fc.weight.data,torch.zeros((new_task_size,self.feature_dim-self.out_dim)).cuda()],dim=0)             
-            new_fc_weight = self.new_fc.weight.data
-            new_fc_bias = self.new_fc.bias.data
-            for i in range(len(self.task_sizes)-2,-1,-1):
-                new_fc_weight = torch.cat([*[self.biases[i](self.backward_prototypes.weight.data[i].unsqueeze(0),bias=False) for _ in range(self.task_sizes[i])], new_fc_weight],dim=0)
-                new_fc_bias = torch.cat([*[self.biases[i](self.backward_prototypes.bias.data[i].unsqueeze(0),bias=True) for _ in range(self.task_sizes[i])], new_fc_bias])
-            old_fc.weight.data = torch.cat([old_fc.weight.data,new_fc_weight],dim=1)
-            old_fc.bias.data = torch.cat([self.old_fc.bias.data,torch.zeros(new_task_size).cuda()])
-            old_fc.bias.data+=new_fc_bias
-            self.old_fc = old_fc
-        else:
-            self.old_fc  = self.new_fc
-
-    def copy(self):
-        return copy.deepcopy(self)
-
-    def copy_fc(self, fc):
-        weight = copy.deepcopy(fc.weight.data)
-        bias = copy.deepcopy(fc.bias.data)
-        n, m = weight.shape[0], weight.shape[1]
-        self.fc.weight.data[:n, :m] = weight
-        self.fc.bias.data[:n] = bias
-
-    def freeze(self):
-        for param in self.parameters():
-            param.requires_grad = False
-        self.eval()
-        return self
-
-    def freeze_conv(self):
-        for param in self.convnets.parameters():
-            param.requires_grad = False
-        self.convnets.eval()
-
-    def weight_align(self, old, increment, value):
-        weights = self.fc.weight.data
-        newnorm = torch.norm(weights[-increment:, :], p=2, dim=1)
-        oldnorm = torch.norm(weights[:-increment, :], p=2, dim=1)
-        meannew = torch.mean(newnorm)
-        meanold = torch.mean(oldnorm)
-        gamma = meanold / meannew * (value ** (old / increment))
-        logging.info("align weights, gamma = {} ".format(gamma))
-        self.fc.weight.data[-increment:, :] *= gamma
-
 
 class AdaptiveNet(nn.Module):
     def __init__(self, args, pretrained):
         super(AdaptiveNet, self).__init__()
-        self.convnet_type = args["convnet_type"]
-        self.TaskAgnosticExtractor , _ = get_convnet(args, pretrained) #Generalized blocks
+        self.backbone_type = args["backbone_type"]
+        self.TaskAgnosticExtractor , _ = get_backbone(args, pretrained) #Generalized blocks
         self.TaskAgnosticExtractor.train()
         self.AdaptiveExtractors = nn.ModuleList() #Specialized Blocks
         self.pretrained=pretrained
@@ -797,7 +887,7 @@ class AdaptiveNet(nn.Module):
         '''
         
     def update_fc(self,nb_classes):
-        _ , _new_extractor = get_convnet(self.args)
+        _ , _new_extractor = get_backbone(self.args, self.pretrained)
         if len(self.AdaptiveExtractors)==0:
             self.AdaptiveExtractors.append(_new_extractor)
         else:
@@ -805,8 +895,8 @@ class AdaptiveNet(nn.Module):
             self.AdaptiveExtractors[-1].load_state_dict(self.AdaptiveExtractors[-2].state_dict())
 
         if self.out_dim is None:
-            logging.info(self.AdaptiveExtractors[-1])
-            self.out_dim=self.AdaptiveExtractors[-1].feature_dim        
+            # logging.info(self.AdaptiveExtractors[-1])
+            self.out_dim=self.AdaptiveExtractors[-1].out_dim        
         fc = self.generate_fc(self.feature_dim, nb_classes)             
         if self.fc is not None:
             nb_output = self.fc.out_features
@@ -844,7 +934,7 @@ class AdaptiveNet(nn.Module):
             pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
                 args["dataset"],
                 args["seed"],
-                args["convnet_type"],
+                args["backbone_type"],
                 0,
                 args["init_cls"],
             )
@@ -853,7 +943,7 @@ class AdaptiveNet(nn.Module):
             checkpoint_name = f"checkpoints/finetune_{args['csv_name']}_0.pkl"
         checkpoint_name = checkpoint_name.replace("memo_", "")
         model_infos = torch.load(checkpoint_name)
-        model_dict = model_infos['convnet']
+        model_dict = model_infos['backbone']
         assert len(self.AdaptiveExtractors) == 1
 
         base_state_dict = self.TaskAgnosticExtractor.state_dict()
@@ -881,163 +971,250 @@ class AdaptiveNet(nn.Module):
         return test_acc
 
 
-class ACILNet(BaseNet):
-    """
-    Network structure of the ACIL [1].
-
-    This implementation refers to the official implementation https://github.com/ZHUANGHP/Analytic-continual-learning.
-
-    References:
-    [1] Zhuang, Huiping, et al.
-        "ACIL: Analytic class-incremental learning with absolute memorization and privacy protection."
-        Advances in Neural Information Processing Systems 35 (2022): 11602-11614.
-    """
-    def __init__(
-        self,
-        args: Dict[str, Any],
-        buffer_size: int = 8192,
-        gamma: float = 0.1,
-        pretrained: bool = False,
-        device=None,
-        dtype=torch.double,
-    ) -> None:
+class EaseNet(BaseNet):
+    def __init__(self, args, pretrained=True):
         super().__init__(args, pretrained)
-        assert isinstance(
-            self.convnet, torch.nn.Module
-        ), "The backbone network `convnet` must be a `torch.nn.Module`."
-        self.convnet: torch.nn.Module = self.convnet.to(device, non_blocking=True)
-
         self.args = args
-        self.buffer_size: int = buffer_size
-        self.gamma: float = gamma
-        self.device = device
-        self.dtype = dtype
+        self.inc = args["increment"]
+        self.init_cls = args["init_cls"]
+        self._cur_task = -1
+        self.out_dim =  self.backbone.out_dim
+        self.fc = None
+        self.use_init_ptm = args["use_init_ptm"]
+        self.alpha = args["alpha"]
+        self.beta = args["beta"]
+            
+    def freeze(self):
+        for name, param in self.named_parameters():
+            param.requires_grad = False
+            # print(name)
+    
+    @property
+    def feature_dim(self):
+        if self.use_init_ptm:
+            return self.out_dim * (self._cur_task + 2)
+        else:
+            return self.out_dim * (self._cur_task + 1)
 
-    @torch.no_grad()
-    def forward(self, X: torch.Tensor) -> Dict[str, torch.Tensor]:
-        X = self.convnet(X)["features"]
-        X = self.buffer(X)
-        X = self.fc(X)["logits"]
-        return {"logits": X}
+    # (proxy_fc = cls * dim)
+    def update_fc(self, nb_classes):
+        self._cur_task += 1
+        
+        if self._cur_task == 0:
+            self.proxy_fc = self.generate_fc(self.out_dim, self.init_cls).to(self._device)
+        else:
+            self.proxy_fc = self.generate_fc(self.out_dim, self.inc).to(self._device)
+        
+        fc = self.generate_fc(self.feature_dim, nb_classes).to(self._device)
+        fc.reset_parameters_to_zero()
+        
+        if self.fc is not None:
+            old_nb_classes = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            fc.sigma.data = self.fc.sigma.data
+            fc.weight.data[ : old_nb_classes, : -self.out_dim] = nn.Parameter(weight)
+        del self.fc
+        self.fc = fc
+    
+    def generate_fc(self, in_dim, out_dim):
+        fc = EaseCosineLinear(in_dim, out_dim)
+        return fc
+    
+    def extract_vector(self, x):
+        return self.backbone(x)
 
-    def update_fc(self, nb_classes: int) -> None:
-        self.fc.update_fc(nb_classes)
+    def forward(self, x, test=False):
+        if test == False:
+            x = self.backbone.forward(x, False)
+            out = self.proxy_fc(x)
+        else:
+            x = self.backbone.forward(x, True, use_init_ptm=self.use_init_ptm)
+            if self.args["moni_adam"] or (not self.args["use_reweight"]):
+                out = self.fc(x)
+            else:
+                out = self.fc.forward_reweight(x, cur_task=self._cur_task, alpha=self.alpha, init_cls=self.init_cls, inc=self.inc, use_init_ptm=self.use_init_ptm, beta=self.beta)
+            
+        out.update({"features": x})
+        return out
 
-    def generate_fc(self, *_) -> None:
-        self.fc = RecursiveLinear(
-            self.buffer_size,
-            self.gamma,
-            bias=False,
-            device=self.device,
-            dtype=self.dtype,
-        )
+    def show_trainable_params(self):
+        for name, param in self.named_parameters():
+            if param.requires_grad:
+                print(name, param.numel())
 
-    def generate_buffer(self) -> None:
-        self.buffer = RandomBuffer(
-            self.feature_dim, self.buffer_size, device=self.device, dtype=self.dtype
-        )
+class SLCANet(BaseNet):
 
-    def after_task(self) -> None:
-        self.fc.after_task()
-
-    @torch.no_grad()
-    def fit(self, X: torch.Tensor, y: torch.Tensor) -> None:
-        X = self.convnet(X)["features"]
-        X = self.buffer(X)
-        Y: torch.Tensor = torch.nn.functional.one_hot(y, self.fc.out_features)
-        self.fc.fit(X, Y)
+    def __init__(self, args, pretrained=True, fc_with_ln=False):
+        super().__init__(args, pretrained)
+        self.old_fc = None
+        self.fc_with_ln = fc_with_ln
 
 
-class DSALNet(ACILNet):
-    """
-    Network structure of the DS-AL [1].
+    def extract_layerwise_vector(self, x, pool=True):
+        with torch.no_grad():
+            features = self.backbone(x, layer_feat=True)['features']
+        for f_i in range(len(features)):
+            if pool:
+                features[f_i] = features[f_i].mean(1).cpu().numpy() 
+            else:
+                features[f_i] = features[f_i][:, 0].cpu().numpy() 
+        return features
 
-    This implementation refers to the official implementation https://github.com/ZHUANGHP/Analytic-continual-learning.
 
-    References:
-    [1] Zhuang, Huiping, et al.
-        "DS-AL: A Dual-Stream Analytic Learning for Exemplar-Free Class-Incremental Learning."
-        Proceedings of the AAAI Conference on Artificial Intelligence. Vol. 38. No. 15. 2024.
-    """
-    def __init__(
-        self,
-        args: Dict[str, Any],
-        buffer_size: int = 8192,
-        gamma_main: float = 1e-3,
-        gamma_comp: float = 1e-3,
-        C: float = 1,
-        activation_main: activation_t = torch.relu,
-        activation_comp: activation_t = torch.tanh,
-        pretrained: bool = False,
-        device=None,
-        dtype=torch.double,
-    ) -> None:
-        self.C = C
-        self.gamma_comp = gamma_comp
-        self.activation_main = activation_main
-        self.activation_comp = activation_comp
-        super().__init__(args, buffer_size, gamma_main, pretrained, device, dtype)
+    def update_fc(self, nb_classes, freeze_old=True):
+        if self.fc is None:
+            self.fc = self.generate_fc(self.feature_dim, nb_classes)
+        else:
+            self.fc.update(nb_classes, freeze_old=freeze_old)
 
-    @torch.no_grad()
-    def forward(self, X: torch.Tensor) -> Dict[str, torch.Tensor]:
-        X = self.buffer(self.convnet(X)["features"])
-        X_main = self.fc(self.activation_main(X))["logits"]
-        X_comp = self.fc_comp(self.activation_comp(X))["logits"]
-        return {"logits": X_main + self.C * X_comp}
+    def save_old_fc(self):
+        if self.old_fc is None:
+            self.old_fc = copy.deepcopy(self.fc)
+        else:
+            self.old_fc.heads.append(copy.deepcopy(self.fc.heads[-1]))
 
-    @torch.no_grad()
-    def fit(self, X: torch.Tensor, y: torch.Tensor) -> None:
-        num_classes = max(self.fc.out_features, int(y.max().item()) + 1)
-        Y_main = torch.nn.functional.one_hot(y, num_classes=num_classes)
-        X = self.buffer(self.convnet(X)["features"])
+    def generate_fc(self, in_dim, out_dim):
+        fc = SimpleContinualLinear(in_dim, out_dim)
 
-        # Train the main stream
-        X_main = self.activation_main(X)
-        self.fc.fit(X_main, Y_main)
-        self.fc.after_task()
+        return fc
 
-        # Previous label cleansing (PLC)
-        Y_comp = Y_main - self.fc(X_main)["logits"]
-        Y_comp[:, : -self.increment_size] = 0
+    def forward(self, x, bcb_no_grad=False, fc_only=False):
+        if fc_only:
+            fc_out = self.fc(x)
+            if self.old_fc is not None:
+                old_fc_logits = self.old_fc(x)['logits']
+                fc_out['old_logits'] = old_fc_logits
+            return fc_out
+        if bcb_no_grad:
+            with torch.no_grad():
+                x = self.backbone(x)
+        else:
+            x = self.backbone(x)
+        out = self.fc(x)
+        out.update({"features": x})
 
-        # Train the compensation stream
-        X_comp = self.activation_comp(X)
-        self.fc_comp.fit(X_comp, Y_comp)
+        return out
 
-    @torch.no_grad()
-    def after_task(self) -> None:
-        self.fc.after_task()
-        self.fc_comp.after_task()
+class LAE(nn.Module):
+    def __init__(self, args, pretrained=True):
+        super().__init__()
+        self.backbone = get_backbone(args, pretrained=pretrained)
+        self.backbone.out_dim = 768
+        self.fc = None
+        self._device = args["device"][0]
+        self.args = args
+        self.pet_cls = args["pet_cls"]
+        self.pet_length = args["pet_length"]
+        self.pets_emas = nn.ModuleList([])
+        self.adapt_blocks = [0, 1, 2, 3, 4]
+        self.down_sample_dim = args["down_sample_dim"]
 
-    def generate_buffer(self) -> None:
-        self.buffer = RandomBuffer(
-            self.feature_dim,
-            self.buffer_size,
-            activation=None,
-            device=self.device,
-            dtype=self.dtype,
-        )
+        self.pets = self.create_pets()
+        self.pets_emas = self.create_pets()
+        for pq, pk in zip(self.pets.parameters(),self.pets_emas.parameters()):
+            pk.data.copy_(pq.data)
+            pk.requires_grad=False
+        self.attach_pets_vit(self.pets)
 
-    def generate_fc(self, *_) -> None:
-        # Main stream
-        self.fc = RecursiveLinear(
-            self.buffer_size,
-            self.gamma,
-            bias=False,
-            device=self.device,
-            dtype=self.dtype,
-        )
+    @property
+    def feature_dim(self):
+        return self.backbone.out_dim
 
-        # Compensation stream
-        self.fc_comp = RecursiveLinear(
-            self.buffer_size,
-            self.gamma_comp,
-            bias=False,
-            device=self.device,
-            dtype=self.dtype,
-        )
+    def create_pets(self):
+        n = len(self.adapt_blocks)
+        embed_dim = self.backbone.embed_dim
+        if self.pet_cls == "Prefix":
+            from backbone.vit_lae import Prefix
+            return nn.ModuleList([Prefix(length=self.pet_length, dim=embed_dim) for _ in range(n)])
+        if self.pet_cls == "Adapter":
+            from backbone.vit_lae import Adapter
+            return nn.ModuleList([Adapter(embed_dim=embed_dim, down_sample=self.down_sample_dim) for _ in range(n)])
+        if self.pet_cls == "LoRA":
+            from backbone.vit_lae import KVLoRA
+            return nn.ModuleList([KVLoRA(in_features=embed_dim, out_features=embed_dim) for _ in range(n)] )
 
-    def update_fc(self, nb_classes) -> None:
-        self.increment_size = nb_classes - self.fc.out_features
-        self.fc.update_fc(nb_classes)
-        self.fc_comp.update_fc(nb_classes)
+    def attach_pets_vit(self, pets: nn.ModuleList):
+        assert self.pet_cls in ["Adapter", "LoRA", "Prefix"]
+        
+        if self.pet_cls == "Prefix":
+            for i, b in enumerate(self.adapt_blocks):
+                self.backbone.blocks[b].attn.attach_prefix(pets[i])
+            return
+        if self.pet_cls == "Adapter":
+            for i, b in enumerate(self.adapt_blocks):
+                self.backbone.blocks[b].attn.attach_adapter(attn=pets[i])
+            return
+        if self.cfg.pet_cls == "LoRA":
+            for i, b in enumerate(self.cfg.adapt_blocks):
+                self.model.backbone.blocks[b].attn.attach_adapter(qkv=pets[i])
+            return
+        
+    def extract_vector(self, x):
+        return self.backbone(x)
+
+    def forward(self, x):
+        x = self.backbone(x)
+        x = x[:,0,:]
+        out = self.fc(x)
+        
+        return out
+
+    def update_fc(self, nb_classes):
+        fc = self.generate_fc(self.feature_dim, nb_classes)
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            bias = copy.deepcopy(self.fc.bias.data)
+            fc.weight.data[:nb_output] = weight
+            fc.bias.data[:nb_output] = bias
+
+        del self.fc
+        self.fc = fc
+
+    def generate_fc(self, in_dim, out_dim):
+        fc = SimpleLinear(in_dim, out_dim)
+        return fc
+
+class MOSNet(nn.Module):
+    def __init__(self, args, pretrained):
+        super(MOSNet, self).__init__()
+        self.backbone = get_backbone(args, pretrained)
+        self.backbone.out_dim = 768
+        self.fc = None
+        self._device = args["device"][0]
+
+    @property
+    def feature_dim(self):
+        return self.backbone.out_dim
+
+    def update_fc(self, nb_classes, nextperiod_initialization=None):
+        fc = self.generate_fc(self.feature_dim, nb_classes).to(self._device)
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            fc.sigma.data = self.fc.sigma.data
+            if nextperiod_initialization is not None:
+                weight = torch.cat([weight, nextperiod_initialization])
+            else:
+                weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).to(self._device)])
+            fc.weight = nn.Parameter(weight)
+        del self.fc
+        self.fc = fc.requires_grad_(False)
+    
+    def generate_fc(self, in_dim, out_dim):
+        fc = CosineLinear(in_dim, out_dim)
+        return fc
+    
+    def forward_orig(self, x):
+        features = self.backbone(x, adapter_id=0)['features']
+        
+        res = dict()
+        res['features'] = features
+        res['logits'] = self.fc(features)['logits']
+                
+        return res
+        
+    def forward(self, x, adapter_id=-1, train=False, fc_only=False):
+        res = self.backbone(x, adapter_id, train, fc_only)
+
+        return res

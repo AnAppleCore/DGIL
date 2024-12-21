@@ -4,14 +4,13 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from utils.data import (iCIFAR10, iCIFAR100, iCORe50, iDomainNet, iGanFake,
-                        iImageCLEF, iImageNet100, iImageNet1000,
-                        iMiniDomainNet, iOffice31, iOfficeCaltech, iOfficeHome,
-                        use_multi_domain_dataset)
+
+from utils.data import *
 
 
 class DataManager(object):
-    def __init__(self, dataset_name, shuffle, seed, init_cls, increment):
+    def __init__(self, dataset_name, shuffle, seed, init_cls, increment, args:dict):
+        self.args = args
         self.dataset_name = dataset_name
         self._setup_data(dataset_name, shuffle, seed)
         assert init_cls <= len(self._class_order), "No enough classes."
@@ -21,18 +20,16 @@ class DataManager(object):
         offset = len(self._class_order) - sum(self._increments)
         if offset > 0:
             self._increments.append(offset)
-
+            
     @property
     def nb_tasks(self):
         return len(self._increments)
 
     def get_task_size(self, task):
         return self._increments[task]
-    
-    def get_accumulate_tasksize(self,task):
-        return sum(self._increments[:task+1])
-    
-    def get_total_classnum(self):
+
+    @property
+    def nb_classes(self):
         return len(self._class_order)
 
     def get_dataset(
@@ -84,51 +81,6 @@ class DataManager(object):
             return data, targets, DummyDataset(data, targets, trsf, self.use_path)
         else:
             return DummyDataset(data, targets, trsf, self.use_path)
-
-    def get_finetune_dataset(self,known_classes,total_classes,source,mode,appendent,type="ratio"):
-        if source == 'train':
-            x, y = self._train_data, self._train_targets
-        elif source == 'test':
-            x, y = self._test_data, self._test_targets
-        else:
-            raise ValueError('Unknown data source {}.'.format(source))
-
-        if mode == 'train':
-            trsf = transforms.Compose([*self._train_trsf, *self._common_trsf])
-        elif mode == 'test':
-            trsf = transforms.Compose([*self._test_trsf, *self._common_trsf])
-        else:
-            raise ValueError('Unknown mode {}.'.format(mode))
-        val_data = []
-        val_targets = []
-
-        old_num_tot = 0
-        appendent_data, appendent_targets = appendent
-
-        for idx in range(0, known_classes):
-            append_data, append_targets = self._select(appendent_data, appendent_targets,
-                                                       low_range=idx, high_range=idx+1)
-            num=len(append_data)
-            if num == 0:
-                continue
-            old_num_tot += num
-            val_data.append(append_data)
-            val_targets.append(append_targets)
-        if type == "ratio":
-            new_num_tot = int(old_num_tot*(total_classes-known_classes)/known_classes)
-        elif type == "same":
-            new_num_tot = old_num_tot
-        else:
-            assert 0, "not implemented yet"
-        new_num_average = int(new_num_tot/(total_classes-known_classes))
-        for idx in range(known_classes,total_classes):
-            class_data, class_targets = self._select(x, y, low_range=idx, high_range=idx+1)
-            val_indx = np.random.choice(len(class_data),new_num_average, replace=False)
-            val_data.append(class_data[val_indx])
-            val_targets.append(class_targets[val_indx])
-        val_data=np.concatenate(val_data)
-        val_targets = np.concatenate(val_targets)
-        return DummyDataset(val_data, val_targets, trsf, self.use_path)
 
     def get_dataset_with_split(
         self, indices, source, mode, appendent=None, val_samples_per_class=0
@@ -187,7 +139,7 @@ class DataManager(object):
         ), DummyDataset(val_data, val_targets, trsf, self.use_path)
 
     def _setup_data(self, dataset_name, shuffle, seed):
-        idata = _get_idata(dataset_name)
+        idata = _get_idata(dataset_name, self.args)
         idata.download_data()
 
         # Data
@@ -225,14 +177,7 @@ class DataManager(object):
 
     def _select(self, x, y, low_range, high_range):
         idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
-        
-        if isinstance(x,np.ndarray):
-            x_return = x[idxes]
-        else:
-            x_return = []
-            for id in idxes:
-                x_return.append(x[id])
-        return x_return, y[idxes]
+        return x[idxes], y[idxes]
 
     def _select_rmm(self, x, y, low_range, high_range, m_rate):
         assert m_rate is not None
@@ -277,7 +222,7 @@ def _map_new_class_index(y, order):
     return np.array(list(map(lambda x: order.index(x), y)))
 
 
-def _get_idata(dataset_name):
+def _get_idata(dataset_name, args=None):
     name = dataset_name.lower()
     if name == "cifar10":
         return iCIFAR10()
@@ -287,22 +232,32 @@ def _get_idata(dataset_name):
         return iImageNet1000()
     elif name == "imagenet100":
         return iImageNet100()
-    elif name == "cddb":
-        return iGanFake()
-    elif name == "core50":
-        return iCORe50()
+    elif name == "cifar224":
+        return iCIFAR224(args)
+    elif name == "imagenetr":
+        return iImageNetR(args)
+    elif name == "imageneta":
+        return iImageNetA()
+    elif name == "cub":
+        return CUB()
+    elif name == "objectnet":
+        return objectnet()
+    elif name == "omnibenchmark":
+        return omnibenchmark()
+    elif name == "vtab":
+        return vtab()
     elif name == "domainnet":
-        return iDomainNet()
+        return domainnet()
     elif name == "minidomainnet":
-        return iMiniDomainNet()
+        return minidomainnet()
     elif name == "officehome":
-        return iOfficeHome()
-    elif name == "officecaltech":
-        return iOfficeCaltech()
+        return officehome()
     elif name == "office31":
-        return iOffice31()
+        return office31()
+    elif name == "officecaltech":
+        return officecaltech()
     elif name == "imageclef":
-        return iImageCLEF()
+        return imageclef()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 

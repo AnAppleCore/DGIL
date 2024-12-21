@@ -1,14 +1,13 @@
 # DGIL
 Domain Generalizable Incremental Learning
 
-
 ### Requirements
 
-1. [torch 1.81](https://github.com/pytorch/pytorch)
-2. [torchvision 0.6.0](https://github.com/pytorch/vision)
-3. [tqdm](https://github.com/tqdm/tqdm)
-4. [numpy](https://github.com/numpy/numpy)
-5. [scipy](https://github.com/scipy/scipy)
-6. [quadprog](https://github.com/quadprog/quadprog)
-7. [POT](https://github.com/PythonOT/POT)
+1. [torch 2.0.1](https://github.com/pytorch/pytorch)
+2. [torchvision 0.15.2](https://github.com/pytorch/vision)
+3. [timm 0.6.12](https://github.com/huggingface/pytorch-image-models)
+4. [tqdm](https://github.com/tqdm/tqdm)
+5. [numpy](https://github.com/numpy/numpy)
+6. [scipy](https://github.com/scipy/scipy)
+7. [easydict](https://github.com/makinacorpus/easydict)
 8. [matplotlib](https://github.com/matplotlib/matplotlib)

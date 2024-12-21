@@ -1,35 +1,32 @@
 import logging
-
 import numpy as np
-import ot
+from tqdm import tqdm
 import torch
-from models.base import BaseLearner
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from tqdm import tqdm
-from utils.inc_net import SimpleCosineIncrementalNet
+from models.base import BaseLearner
+from utils.inc_net import (
+    IncrementalNet,
+    CosineIncrementalNet,
+    SimpleCosineIncrementalNet,
+)
 from utils.toolkit import target2onehot, tensor2numpy
+import ot
+from torch import nn
+import copy
 
 EPSILON = 1e-8
 
-epochs = 160
-lrate = 0.1
-milestones = [80, 120]
-lrate_decay = 0.1
-batch_size = 128
-memory_size = 2000
-T = 2
-
-
-class COIL(BaseLearner):
+class Learner(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
-        self._network = SimpleCosineIncrementalNet(args, False)
+        self._network = SimpleCosineIncrementalNet(args, True)
         self.data_manager = None
         self.nextperiod_initialization = None
         self.sinkhorn_reg = args["sinkhorn"]
         self.calibration_term = args["calibration_term"]
+        self.epochs = args["epochs"]
         self.args = args
 
     def after_task(self):
@@ -39,7 +36,7 @@ class COIL(BaseLearner):
 
     def solving_ot(self):
         with torch.no_grad():
-            if self._total_classes == self.data_manager.get_total_classnum():
+            if self._total_classes == self.data_manager.nb_classes:
                 print("training over, no more ot solving")
                 return None
             each_time_class_num = self.data_manager.get_task_size(1)
@@ -65,7 +62,7 @@ class COIL(BaseLearner):
                 torch.ones(len(next_period_class_means)) / len(former_class_means) * 1.0
             )
             T = ot.sinkhorn(_mu1_vec, _mu2_vec, Q_cost_matrix, self.sinkhorn_reg)
-            T = torch.tensor(T).float().cuda()
+            T = torch.tensor(T).float().to(self._device)
             transformed_hat_W = torch.mm(
                 T.T, F.normalize(self._network.fc.weight, p=2, dim=1)
             )
@@ -104,7 +101,7 @@ class COIL(BaseLearner):
             torch.ones(len(next_period_class_means)) / len(former_class_means) * 1.0
         )
         T = ot.sinkhorn(_mu2_vec, _mu1_vec, Q_cost_matrix, self.sinkhorn_reg)
-        T = torch.tensor(T).float().cuda()
+        T = torch.tensor(T).float().to(self._device)
         transformed_hat_W = torch.mm(
             T.T,
             F.normalize(self._network.fc.weight[-current_class_num:, :], p=2, dim=1),
@@ -132,36 +129,35 @@ class COIL(BaseLearner):
             appendent=self._get_memory(),
         )
         self.train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=4
+            train_dataset, batch_size=self.args["batch_size"], shuffle=True, num_workers=4
         )
         test_dataset = data_manager.get_dataset(
             np.arange(0, self._total_classes), source="test", mode="test"
         )
         self.test_loader = DataLoader(
-            test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+            test_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=4
         )
 
         self._train(self.train_loader, self.test_loader)
-        self._reduce_exemplar(data_manager, memory_size // self._total_classes)
-        self._construct_exemplar(data_manager, memory_size // self._total_classes)
+        self.build_rehearsal_memory(data_manager, self.samples_per_class)
 
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
         if self._old_network is not None:
             self._old_network.to(self._device)
         optimizer = optim.SGD(
-            self._network.parameters(), lr=lrate, momentum=0.9, weight_decay=5e-4
+            self._network.parameters(), lr=self.args["lrate"], momentum=0.9, weight_decay=5e-4
         )  # 1e-5
         scheduler = optim.lr_scheduler.MultiStepLR(
-            optimizer=optimizer, milestones=milestones, gamma=lrate_decay
+            optimizer=optimizer, milestones=self.args["milestones"], gamma=self.args["lrate_decay"]
         )
         self._update_representation(train_loader, test_loader, optimizer, scheduler)
 
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
-        prog_bar = tqdm(range(epochs))
+        prog_bar = tqdm(range(self.epochs))
         for _, epoch in enumerate(prog_bar):
             weight_ot_init = max(1.0 - (epoch / 2) ** 2, 0)
-            weight_ot_co_tuning = (epoch / epochs) ** 2.0
+            weight_ot_co_tuning = (epoch / self.epochs) ** 2.0
 
             self._network.train()
             losses = 0.0
@@ -177,22 +173,22 @@ class COIL(BaseLearner):
                 if self._old_network is not None:
 
                     old_logits = self._old_network(inputs)["logits"].detach()
-                    hat_pai_k = F.softmax(old_logits / T, dim=1)
+                    hat_pai_k = F.softmax(old_logits / self.args["T"], dim=1)
                     log_pai_k = F.log_softmax(
-                        logits[:, : self._known_classes] / T, dim=1
+                        logits[:, : self._known_classes] / self.args["T"], dim=1
                     )
                     distill_loss = -torch.mean(torch.sum(hat_pai_k * log_pai_k, dim=1))
 
                     if epoch < 1:
                         features = F.normalize(output["features"], p=2, dim=1)
                         current_logit_new = F.log_softmax(
-                            logits[:, self._known_classes :] / T, dim=1
+                            logits[:, self._known_classes :] / self.args["T"], dim=1
                         )
                         new_logit_by_wnew_init_by_ot = F.linear(
                             features, F.normalize(self._ot_new_branch, p=2, dim=1)
                         )
                         new_logit_by_wnew_init_by_ot = F.softmax(
-                            new_logit_by_wnew_init_by_ot / T, dim=1
+                            new_logit_by_wnew_init_by_ot / self.args["T"], dim=1
                         )
                         new_branch_distill_loss = -torch.mean(
                             torch.sum(
@@ -214,7 +210,7 @@ class COIL(BaseLearner):
                             features, F.normalize(self._ot_old_branch, p=2, dim=1)
                         )
                         old_logit_by_wold_init_by_ot = F.log_softmax(
-                            old_logit_by_wold_init_by_ot / T, dim=1
+                            old_logit_by_wold_init_by_ot / self.args["T"], dim=1
                         )
                         old_branch_distill_loss = -torch.mean(
                             torch.sum(hat_pai_k * old_logit_by_wold_init_by_ot, dim=1)
@@ -243,7 +239,7 @@ class COIL(BaseLearner):
             info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                 self._cur_task,
                 epoch + 1,
-                epochs,
+                self.epochs,
                 losses / len(train_loader),
                 train_acc,
                 test_acc,
@@ -254,7 +250,7 @@ class COIL(BaseLearner):
 
     def _extract_class_means(self, data_manager, low, high):
         self._ot_prototype_means = np.zeros(
-            (data_manager.get_total_classnum(), self._network.feature_dim)
+            (data_manager.nb_classes, self._network.feature_dim)
         )
         with torch.no_grad():
             for class_idx in range(low, high):
@@ -265,7 +261,7 @@ class COIL(BaseLearner):
                     ret_data=True,
                 )
                 idx_loader = DataLoader(
-                    idx_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+                    idx_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=4
                 )
                 vectors, _ = self._extract_vectors(idx_loader)
                 vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
@@ -277,7 +273,7 @@ class COIL(BaseLearner):
     def _extract_class_means_with_memory(self, data_manager, low, high):
 
         self._ot_prototype_means = np.zeros(
-            (data_manager.get_total_classnum(), self._network.feature_dim)
+            (data_manager.nb_classes, self._network.feature_dim)
         )
         memoryx, memoryy = self._data_memory, self._targets_memory
         with torch.no_grad():
@@ -296,7 +292,7 @@ class COIL(BaseLearner):
                     ret_data=True,
                 )
                 idx_loader = DataLoader(
-                    idx_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+                    idx_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=4
                 )
                 vectors, _ = self._extract_vectors(idx_loader)
                 vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
@@ -312,7 +308,7 @@ class COIL(BaseLearner):
                     ret_data=True,
                 )
                 idx_loader = DataLoader(
-                    idx_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+                    idx_dataset, batch_size=self.args["batch_size"], shuffle=False, num_workers=4
                 )
                 vectors, _ = self._extract_vectors(idx_loader)
                 vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T

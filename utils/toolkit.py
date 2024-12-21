@@ -1,24 +1,7 @@
-import json
 import os
-from enum import Enum
-
 import numpy as np
 import torch
 
-
-class ConfigEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, type):
-            return {'$class': o.__module__ + "." + o.__name__}
-        elif isinstance(o, Enum):
-            return {
-                '$enum': o.__module__ + "." + o.__class__.__name__ + '.' + o.name
-            }
-        elif callable(o):
-            return {
-                '$function': o.__module__ + "." + o.__name__
-            }
-        return json.JSONEncoder.default(self, o)
 
 def count_parameters(model, trainable=False):
     if trainable:
@@ -41,15 +24,25 @@ def makedirs(path):
         os.makedirs(path)
 
 
-def accuracy(y_pred, y_true, nb_old, increment=10):
+def accuracy(y_pred, y_true, nb_old, init_cls=10, increment=10):
     assert len(y_pred) == len(y_true), "Data length error."
     all_acc = {}
     all_acc["total"] = np.around(
         (y_pred == y_true).sum() * 100 / len(y_true), decimals=2
     )
 
-    # Grouped accuracy
-    for class_id in range(0, np.max(y_true), increment):
+    # Grouped accuracy, for initial classes
+    idxes = np.where(
+        np.logical_and(y_true >= 0, y_true < init_cls)
+    )[0]
+    label = "{}-{}".format(
+        str(0).rjust(2, "0"), str(init_cls - 1).rjust(2, "0")
+    )
+    all_acc[label] = np.around(
+        (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
+    )
+    # for incremental classes
+    for class_id in range(init_cls, np.max(y_true), increment):
         idxes = np.where(
             np.logical_and(y_true >= class_id, y_true < class_id + increment)
         )[0]
@@ -62,45 +55,7 @@ def accuracy(y_pred, y_true, nb_old, increment=10):
 
     # Old accuracy
     idxes = np.where(y_true < nb_old)[0]
-    all_acc["old"] = (
-        0
-        if len(idxes) == 0
-        else np.around(
-            (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
-        )
-    )
 
-    # New accuracy
-    idxes = np.where(y_true >= nb_old)[0]
-    all_acc["new"] = np.around(
-        (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
-    )
-
-    return all_acc
-
-
-def accuracy_per_task(y_pred, y_true, nb_old, class_id_pairs=[(0, 9)]):
-    assert len(y_pred) == len(y_true), "Data length error."
-    all_acc = {}
-    all_acc["total"] = np.around(
-        (y_pred == y_true).sum() * 100 / len(y_true), decimals=2
-    )
-
-    # Grouped accuracy
-    for start_class_id, end_class_id in class_id_pairs:
-        if start_class_id <= np.max(y_true):
-            idxes = np.where(
-                np.logical_and(y_true >= start_class_id, y_true <= end_class_id)
-            )[0]
-            label = "{}-{}".format(
-                str(start_class_id).rjust(2, "0"), str(end_class_id).rjust(2, "0")
-            )
-            all_acc[label] = np.around(
-                (y_pred[idxes] == y_true[idxes]).sum() * 100 / len(idxes), decimals=2
-            )
-
-    # Old accuracy
-    idxes = np.where(y_true < nb_old)[0]
     all_acc["old"] = (
         0
         if len(idxes) == 0
@@ -140,27 +95,3 @@ def split_train_val(images:np.ndarray, labels:np.ndarray, val_ratio=0.3, seed=42
     labels_val = labels[idx[:num_val]]
 
     return images_train, labels_train, images_val, labels_val
-
-
-def save_fc(args, model):
-    _path = os.path.join(args['logfilename'], "fc.pt")
-    if len(args['device']) > 1: 
-        fc_weight = model._network.fc.weight.data    
-    else:
-        fc_weight = model._network.fc.weight.data.cpu()
-    torch.save(fc_weight, _path)
-
-    _save_dir = os.path.join(f"./results/fc_weights/{args['prefix']}")
-    os.makedirs(_save_dir, exist_ok=True)
-    _save_path = os.path.join(_save_dir, f"{args['csv_name']}.csv")
-    with open(_save_path, "a+") as f:
-        f.write(f"{args['time_str']},{args['model_name']},{_path} \n")
-
-def save_model(args, model):
-    #used in PODNet
-    _path = os.path.join(args['logfilename'], "model.pt")
-    if len(args['device']) > 1:
-        weight = model._network   
-    else:
-        weight = model._network.cpu()
-    torch.save(weight, _path)

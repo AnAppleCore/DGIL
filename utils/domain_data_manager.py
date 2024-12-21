@@ -1,16 +1,20 @@
 import logging
 
 import numpy as np
+from PIL import Image
+from torch.utils.data import Dataset
 from torchvision import transforms
+
 from utils.data_manager import (DataManager, DummyDataset, _get_idata,
                                 _map_new_class_index)
 
 
 class DomainDataManager(DataManager):
-    def __init__(self, dataset_name, shuffle, seed, init_cls, increment, enable_dgil=False, reference_domain_id=0):
+    def __init__(self, dataset_name, shuffle, seed, init_cls, increment, args:dict):
+        self.arg = args
         self.dataset_name = dataset_name
-        self.enable_dgil = enable_dgil
-        self.reference_domain_id = reference_domain_id
+        self.enable_dgil = args.get("enable_dgil", False)
+        self.reference_domain_id = args.get("reference_domain_id", 0)
         self._setup_data(dataset_name, shuffle, seed, init_cls, increment)
 
     def _setup_data(self, dataset_name, shuffle, seed, init_cls, increment):
