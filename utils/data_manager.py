@@ -27,6 +27,9 @@ class DataManager(object):
 
     def get_task_size(self, task):
         return self._increments[task]
+    
+    def get_task_class_range(self, task):
+        return sum(self._increments[:task]), sum(self._increments[:task + 1])
 
     @property
     def nb_classes(self):
@@ -167,7 +170,7 @@ class DataManager(object):
         else:
             order = idata.class_order
         self._class_order = order
-        logging.info(self._class_order)
+        logging.info("Class order: {}".format(self._class_order))
 
         # Map indices
         self._train_targets = _map_new_class_index(

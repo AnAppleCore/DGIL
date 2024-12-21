@@ -14,7 +14,9 @@ class DomainDataManager(DataManager):
         self.arg = args
         self.dataset_name = dataset_name
         self.enable_dgil = args.get("enable_dgil", False)
+        self.random_reference = args.get("random_reference", False)
         self.reference_domain_id = args.get("reference_domain_id", 0)
+        self.multi_domain_base_task = args.get("multi_domain_base_task", False)
         self._setup_data(dataset_name, shuffle, seed, init_cls, increment)
 
     def _setup_data(self, dataset_name, shuffle, seed, init_cls, increment):
@@ -42,7 +44,7 @@ class DomainDataManager(DataManager):
         else:
             order = idata.class_order
         self._class_order = order
-        logging.info(self._class_order)
+        logging.info("Class order: {}".format(self._class_order))
 
         # Increments
         assert init_cls <= len(self._class_order), "No enough classes."
@@ -70,8 +72,8 @@ class DomainDataManager(DataManager):
             for d in range(self.num_domains):
                 self._train_domain_idx.append(np.ones(len(self._train_data[d]), dtype=np.int32) * d)
                 self._test_domain_idx.append(np.ones(len(self._test_data[d]), dtype=np.int32) * d)
-                logging.info("Number of trainings imgs from domain {}: {}/{}".format(self.domain_names[d], len(self._train_data[d]), len(self._train_data[d])))
-                logging.info("Number of test imgs from domain {}: {}/{}".format(self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
+                logging.info("Number of trainings imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(self._train_data[d]), len(self._train_data[d])))
+                logging.info("Number of test imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
 
             self._train_domain_idx = np.concatenate(self._train_domain_idx)
             self._test_domain_idx = np.concatenate(self._test_domain_idx)
@@ -87,29 +89,52 @@ class DomainDataManager(DataManager):
             _train_data, _train_targets = [], []
             _train_domain_idx, _test_domain_idx = [], []
 
+            # set training data and targets
+            if self.random_reference:
+                self.ref_domain_ids = self.assign_domain_id()
+            else:
+                self.ref_domain_ids = [self.reference_domain_id] * self.nb_tasks
+
+            for task_id in range(self.nb_tasks):
+                ref_domain_id = self.ref_domain_ids[task_id]
+                logging.info("Task {}: reference domain is [{}] {}".format(task_id, ref_domain_id, self.domain_names[ref_domain_id]))
+                _train_data_t, _train_targets_t = self._select(
+                    self._train_data[ref_domain_id], self._train_targets[ref_domain_id],
+                    sum(self._increments[:task_id]), sum(self._increments[:task_id+1])
+                )
+                _train_data.append(_train_data_t)
+                _train_targets.append(_train_targets_t)
+                _train_domain_idx.append(np.ones(len(_train_data_t), dtype=np.int32) * ref_domain_id)
+
+            if self.multi_domain_base_task:
+                for d in range(self.num_domains):
+                    if d != self.ref_domain_ids[0]:
+                        _train_data_d, _train_targets_d = self._select(
+                            self._train_data[d], self._train_targets[d], 0, self.get_task_size(0)
+                        )
+                        _train_data.append(_train_data_d)
+                        _train_targets.append(_train_targets_d)
+                        _train_domain_idx.append(np.ones(len(_train_data_d), dtype=np.int32) * d)
+
+            self._train_domain_idx = np.concatenate(_train_domain_idx)
+
             for d in range(self.num_domains):
-                if d == self.reference_domain_id:
-                    _train_data_d = self._train_data[d]
-                    _train_targets_d = self._train_targets[d]
-                else:
-                    # retrieve the first task
-                    _train_data_d, _train_targets_d = self._select(
-                        self._train_data[d], self._train_targets[d], 0, self.get_task_size(0)
-                    )
-                _train_data.append(_train_data_d)
-                _train_targets.append(_train_targets_d)
-                _train_domain_idx.append(np.ones(len(_train_data_d), dtype=np.int32) * d)
                 _test_domain_idx.append(np.ones(len(self._test_data[d]), dtype=np.int32) * d)
-                logging.info("Number of trainings imgs from domain {}: {}/{}".format(d, len(_train_data_d), len(self._train_data[d])))
-                logging.info("Number of test imgs from domain {}: {}/{}".format(d, len(self._test_data[d]), len(self._test_data[d])))
+                logging.info("Number of trainings imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(np.where(self._train_domain_idx == d)[0]), len(self._train_data[d])))
+                logging.info("Number of test imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
 
             self._train_data = np.concatenate(_train_data)
             self._train_targets = np.concatenate(_train_targets)
-            self._train_domain_idx = np.concatenate(_train_domain_idx)
-
             self._test_data = np.concatenate(self._test_data)
             self._test_targets = np.concatenate(self._test_targets)
             self._test_domain_idx = np.concatenate(_test_domain_idx)
+
+            logging.info("Number of trainings imgs: {}".format(len(self._train_data)))
+            logging.info("Number of trainings targets: {}".format(len(self._train_targets)))
+            logging.info("Number of trainings domain idx: {}".format(len(self._train_domain_idx)))
+            logging.info("Number of test imgs: {}".format(len(self._test_data)))
+            logging.info("Number of test targets: {}".format(len(self._test_targets)))
+            logging.info("Number of test domain idx: {}".format(len(self._test_domain_idx)))
 
             return
 
@@ -165,3 +190,18 @@ class DomainDataManager(DataManager):
             return data, targets, DummyDataset(data, targets, trsf, self.use_path)
         else:
             return DummyDataset(data, targets, trsf, self.use_path)
+        
+
+    def assign_domain_id(self):
+        # Create an array with repeated domain IDs
+        domain_ids = np.tile(np.arange(self.num_domains), self.nb_tasks // self.num_domains)
+        
+        # If there are extra tasks, randomly assign the remainder
+        domain_ids = np.concatenate([
+            domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains)
+        ])
+        
+        # Shuffle the domain IDs to randomize the assignments
+        np.random.shuffle(domain_ids)
+        
+        return domain_ids

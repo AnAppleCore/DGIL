@@ -139,8 +139,8 @@ def _train(args:dict):
                 cnn_accy = cnn_accy_per_domain[domain_name]
                 nme_accy = nme_accy_per_domain[domain_name]
                 if nme_accy is not None:
-                    logging.info("Domain {}: CNN: {}".format(domain_name, cnn_accy["grouped"]))
-                    logging.info("Domain {}: NME: {}".format(domain_name, nme_accy["grouped"]))
+                    logging.info("Domain [{}] {}: CNN: {}".format(domain_id, domain_name, cnn_accy["grouped"]))
+                    logging.info("Domain [{}] {}: NME: {}".format(domain_id, domain_name, nme_accy["grouped"]))
                     
                     cnn_keys = [key for key in cnn_accy["grouped"].keys() if '-' in key]
                     cnn_keys_sorted = sorted(cnn_keys)
@@ -158,15 +158,15 @@ def _train(args:dict):
                     nme_curve_per_domain[domain_name]["top1"].append(nme_accy["top1"])
                     nme_curve_per_domain[domain_name][f"top{model.topk}"].append(nme_accy[f"top{model.topk}"])
 
-                    logging.info("Domain {}: CNN top1 curve: {}".format(domain_name, cnn_curve_per_domain[domain_name]["top1"]))
-                    logging.info("Domain {}: CNN top{} curve: {}".format(domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
-                    logging.info("Domain {}: NME top1 curve: {}".format(domain_name, nme_curve_per_domain[domain_name]["top1"]))
-                    logging.info("Domain {}: NME top{} curve: {}\n".format(domain_name, model.topk, nme_curve_per_domain[domain_name][f"top{model.topk}"]))
-                    logging.info("Domain {}: Average Accuracy (CNN): {}".format(domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
-                    logging.info("Domain {}: Average Accuracy (NME): {}".format(domain_name, sum(nme_curve_per_domain[domain_name]["top1"])/len(nme_curve_per_domain[domain_name]["top1"])))
+                    logging.info("Domain [{}] {}: CNN top1 curve: {}".format(domain_id, domain_name, cnn_curve_per_domain[domain_name]["top1"]))
+                    logging.info("Domain [{}] {}: CNN top{} curve: {}".format(domain_id, domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
+                    logging.info("Domain [{}] {}: NME top1 curve: {}".format(domain_id, domain_name, nme_curve_per_domain[domain_name]["top1"]))
+                    logging.info("Domain [{}] {}: NME top{} curve: {}".format(domain_id, domain_name, model.topk, nme_curve_per_domain[domain_name][f"top{model.topk}"]))
+                    logging.info("Domain [{}] {}: Average Accuracy (CNN): {}".format(domain_id, domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
+                    logging.info("Domain [{}] {}: Average Accuracy (NME): {}\n".format(domain_id, domain_name, sum(nme_curve_per_domain[domain_name]["top1"])/len(nme_curve_per_domain[domain_name]["top1"])))
                 else:
-                    logging.info("Domain {}: No NME accuracy.".format(domain_name))
-                    logging.info("Domain {}: CNN: {}".format(domain_name, cnn_accy["grouped"]))
+                    logging.info("Domain [{}] {}: No NME accuracy.".format(domain_id, domain_name))
+                    logging.info("Domain [{}] {}: CNN: {}".format(domain_id, domain_name, cnn_accy["grouped"]))
 
                     cnn_keys = [key for key in cnn_accy["grouped"].keys() if '-' in key]
                     cnn_keys_sorted = sorted(cnn_keys)
@@ -176,9 +176,9 @@ def _train(args:dict):
                     cnn_curve_per_domain[domain_name]["top1"].append(cnn_accy["top1"])
                     cnn_curve_per_domain[domain_name][f"top{model.topk}"].append(cnn_accy[f"top{model.topk}"])
 
-                    logging.info("Domain {}: CNN top1 curve: {}".format(domain_name, cnn_curve_per_domain[domain_name]["top1"]))
-                    logging.info("Domain {}: CNN top{} curve: {}\n".format(domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
-                    logging.info("Domain {}: Average Accuracy (CNN): {}".format(domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
+                    logging.info("Domain [{}] {}: CNN top1 curve: {}".format(domain_id, domain_name, cnn_curve_per_domain[domain_name]["top1"]))
+                    logging.info("Domain [{}] {}: CNN top{} curve: {}".format(domain_id, domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
+                    logging.info("Domain [{}] {}: Average Accuracy (CNN): {}\n".format(domain_id, domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
 
         model.after_task()
 
@@ -191,8 +191,6 @@ def _train(args:dict):
                 np_acctable[idxx, :idxy] = np.array(line)
             np_acctable = np_acctable.T
             forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-            # print('Accuracy Matrix (CNN):')
-            # print(np_acctable)
             logging.info('Accuracy Matrix (CNN): \n{}'.format(np_acctable))
             logging.info('Forgetting (CNN): {}'.format(forgetting))
         if len(nme_matrix) > 0:
@@ -202,8 +200,6 @@ def _train(args:dict):
                 np_acctable[idxx, :idxy] = np.array(line)
             np_acctable = np_acctable.T
             forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-            # print('Accuracy Matrix (NME):')
-            # print(np_acctable)
             logging.info('Accuracy Matrix (NME): \n{}'.format(np_acctable))
             logging.info('Forgetting (NME): {}'.format(forgetting))
 
@@ -218,10 +214,8 @@ def _train(args:dict):
                         np_acctable[idxx, :idxy] = np.array(line)
                     np_acctable = np_acctable.T
                     forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                    # print('Domain {}: Accuracy Matrix (CNN):'.format(domain_name))
-                    # print(np_acctable)
-                    logging.info('Domain {}: Accuracy Matrix (CNN): \n{}'.format(domain_name, np_acctable))
-                    logging.info('Domain {}: Forgetting (CNN): {}'.format(domain_name, forgetting))
+                    logging.info('Domain [{}] {}: Accuracy Matrix (CNN): \n{}'.format(domain_id, domain_name, np_acctable))
+                    logging.info('Domain [{}] {}: Forgetting (CNN): {}'.format(domain_id, domain_name, forgetting))
                 nme_matrix = nme_matrix_per_domain[domain_name]
                 if len(nme_matrix)>0:
                     np_acctable = np.zeros([task + 1, task + 1])
@@ -230,10 +224,8 @@ def _train(args:dict):
                         np_acctable[idxx, :idxy] = np.array(line)
                     np_acctable = np_acctable.T
                     forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                    # print('Domain {}: Accuracy Matrix (NME):'.format(domain_name))
-                    # print(np_acctable)
-                    logging.info('Domain {}: Accuracy Matrix (NME): \n{}'.format(domain_name, np_acctable))
-                    logging.info('Domain {}: Forgetting (NME): {}'.format(domain_name, forgetting))
+                    logging.info('Domain [{}] {}: Accuracy Matrix (NME): \n{}'.format(domain_id, domain_name, np_acctable))
+                    logging.info('Domain [{}] {}: Forgetting (NME): {}'.format(domain_id, domain_name, forgetting))
 
 
 def _set_device(args):
