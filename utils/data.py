@@ -2,11 +2,12 @@ import os
 
 import numpy as np
 from torchvision import datasets, transforms
+from torchvision.transforms import InterpolationMode
 
 from utils.toolkit import split_images_labels, split_train_val
 
 MultiDomainDatasets = [
-    "domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef"
+    "domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef", "digitsdg", "digitsfive", "core50"
 ]
 
 
@@ -122,7 +123,7 @@ def build_transform(is_train, args):
     if resize_im:
         size = int((256 / 224) * input_size)
         t.append(
-            transforms.Resize(size, interpolation="bilinear"),  # to maintain same ratio w.r.t. 224 images
+            transforms.Resize(size, interpolation=InterpolationMode.BICUBIC),  # to maintain same ratio w.r.t. 224 images
         )
         t.append(transforms.CenterCrop(input_size))
     t.append(transforms.ToTensor())
@@ -359,18 +360,9 @@ class vtab(iData):
 
 class domainnet(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(345).tolist()
     domain_names = ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
@@ -418,18 +410,9 @@ class domainnet(iData):
 
 class minidomainnet(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(345).tolist()
     domain_names = ["clipart", "painting", "real", "sketch"]
@@ -478,18 +461,9 @@ class minidomainnet(iData):
 
 class officehome(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(65).tolist()
     domain_names = ["Art", "Clipart", "Product", "Real World"]
@@ -519,18 +493,9 @@ class officehome(iData):
 
 class office31(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(31).tolist()
     domain_names = ["amazon", "dslr", "webcam"]
@@ -560,18 +525,9 @@ class office31(iData):
 
 class officecaltech(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(10).tolist()
     domain_names = ["amazon", "caltech", "dslr", "webcam"]
@@ -601,18 +557,9 @@ class officecaltech(iData):
 
 class imageclef(iData):
     use_path = True
-    train_trsf = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-    ]
-    test_trsf = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-    ]
-    common_trsf = [
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ]
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
 
     class_order = np.arange(12).tolist()
     domain_names = ['i', 'p', 'c'] # b?
@@ -620,6 +567,104 @@ class imageclef(iData):
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
         root_dir = "/data/datasets/image_CLEF/"
+
+        self.train_data = []
+        self.train_targets = []
+
+        self.test_data = []
+        self.test_targets = []
+
+        for domain_id, domain_name in enumerate(self.domain_names):
+            domain_img_dir = os.path.join(root_dir, domain_name)
+            domain_dset = datasets.ImageFolder(domain_img_dir)
+            domain_images, domain_labels = split_images_labels(domain_dset.imgs)
+            train_data_d, train_targets_d, test_data_d, test_targets_d = \
+                split_train_val(domain_images, domain_labels, val_ratio=0.3, seed=42)
+
+            self.train_data.append(train_data_d)
+            self.train_targets.append(train_targets_d)
+            self.test_data.append(test_data_d)
+            self.test_targets.append(test_targets_d)
+
+
+class digitsdg(iData):
+    use_path = True
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
+
+    class_order = np.arange(10).tolist()
+    domain_names = ['mnist', 'mnist_m', 'svhn', 'syn']
+
+    def download_data(self):
+        # assert 0, "You should specify the folder of your dataset"
+        root_dir = "/data/datasets/digits_dg"
+
+        self.train_data = []
+        self.train_targets = []
+
+        self.test_data = []
+        self.test_targets = []
+
+        for domain_id, domain_name in enumerate(self.domain_names):
+            domain_img_dir = os.path.join(root_dir, domain_name)
+            domain_train_img_dir = os.path.join(domain_img_dir, "train")
+            domain_test_img_dir = os.path.join(domain_img_dir, "val")
+            domain_train_dset = datasets.ImageFolder(domain_train_img_dir)
+            domain_test_dset = datasets.ImageFolder(domain_test_img_dir)
+            domain_train_images, domain_train_labels = split_images_labels(domain_train_dset.imgs)
+            domain_test_images, domain_test_labels = split_images_labels(domain_test_dset.imgs)
+
+            self.train_data.append(domain_train_images)
+            self.train_targets.append(domain_train_labels)
+            self.test_data.append(domain_test_images)
+            self.test_targets.append(domain_test_labels)
+
+
+class digitsfive(iData):
+    use_path = True
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
+
+    class_order = np.arange(10).tolist()
+    domain_names = ['mnist', 'mnist_m', 'svhn', 'syn', 'usps']
+
+    def download_data(self):
+        # assert 0, "You should specify the folder of your dataset"
+        root_dir = "/data/datasets/dg5"
+
+        self.train_data = []
+        self.train_targets = []
+
+        self.test_data = []
+        self.test_targets = []
+
+        for domain_id, domain_name in enumerate(self.domain_names):
+            domain_img_dir = os.path.join(root_dir, domain_name)
+            domain_dset = datasets.ImageFolder(domain_img_dir)
+            domain_images, domain_labels = split_images_labels(domain_dset.imgs)
+            train_data_d, train_targets_d, test_data_d, test_targets_d = \
+                split_train_val(domain_images, domain_labels, val_ratio=0.3, seed=42)
+
+            self.train_data.append(train_data_d)
+            self.train_targets.append(train_targets_d)
+            self.test_data.append(test_data_d)
+            self.test_targets.append(test_targets_d)
+
+
+class core50(iData):
+    use_path = True
+    train_trsf = build_transform(True, None)
+    test_trsf = build_transform(False, None)
+    common_trsf = [    ]
+
+    class_order = np.arange(50).tolist()
+    domain_names = [f"s{i}" for i in range(1, 12)]
+
+    def download_data(self):
+        # assert 0, "You should specify the folder of your dataset"
+        root_dir = "/data/datasets/core50/core50_128x128"
 
         self.train_data = []
         self.train_targets = []

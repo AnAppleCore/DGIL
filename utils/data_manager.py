@@ -261,6 +261,12 @@ def _get_idata(dataset_name, args=None):
         return officecaltech()
     elif name == "imageclef":
         return imageclef()
+    elif name == "digitsdg":
+        return digitsdg()
+    elif name == "digitsfive":
+        return digitsfive()
+    elif name == "core50":
+        return core50()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 
