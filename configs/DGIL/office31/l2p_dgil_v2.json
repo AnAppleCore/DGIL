@@ -1,12 +1,12 @@
 {
-    "prefix": "DGIL",
-    "dataset": "officecaltech",
+    "prefix": "DGIL_v2",
+    "dataset": "office31",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 2,
-    "increment": 2,
+    "init_cls": 4,
+    "increment": 4,
     "model_name": "l2p",
     "backbone_type": "vit_base_patch16_224_l2p",
     "get_original_backbone": true,
@@ -48,7 +48,7 @@
 
     "print_forget": true,
     "enable_dgil": true,
-    "random_reference": false,
+    "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": true
+    "multi_domain_base_task": false
 }

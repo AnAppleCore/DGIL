@@ -1,21 +1,21 @@
 {
-    "prefix": "DGIL",
-    "dataset": "officecaltech",
+    "prefix": "CIL",
+    "dataset": "minidomainnet",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 2,
-    "increment": 2,
+    "init_cls": 12,
+    "increment": 12,
     "model_name": "l2p",
     "backbone_type": "vit_base_patch16_224_l2p",
     "get_original_backbone": true,
     "device": ["0"],
     "seed": [1993],
     
-    "tuned_epoch": 5,
+    "tuned_epoch": 10,
     "init_lr": 0.001875,
-    "batch_size": 16,
+    "batch_size": 32,
     "weight_decay": 0,
     "min_lr": 1e-5,
     "optimizer": "adam",
@@ -46,9 +46,5 @@
     "pull_constraint": true,
     "pull_constraint_coeff": 0.1,
 
-    "print_forget": true,
-    "enable_dgil": true,
-    "random_reference": false,
-    "reference_domain_id": 0,
-    "multi_domain_base_task": true
+    "print_forget": true
 }

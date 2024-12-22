@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL",
+    "prefix": "DGIL_v2",
     "dataset": "officecaltech",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -48,7 +48,7 @@
 
     "print_forget": true,
     "enable_dgil": true,
-    "random_reference": false,
+    "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": true
+    "multi_domain_base_task": false
 }
