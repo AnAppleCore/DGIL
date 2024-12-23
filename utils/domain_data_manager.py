@@ -198,7 +198,7 @@ class DomainDataManager(DataManager):
         
         # If there are extra tasks, randomly assign the remainder
         domain_ids = np.concatenate([
-            domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains)
+            domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains, replace=False)
         ])
         
         # Shuffle the domain IDs to randomize the assignments
