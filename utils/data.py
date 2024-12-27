@@ -41,8 +41,8 @@ class iCIFAR10(iData):
     class_order = np.arange(10).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR10("/data/datasets/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR10("/data/datasets/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR10("/home/liyuan/data/CIFAR", train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR10("/home/liyuan/data/CIFAR", train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -69,8 +69,8 @@ class iCIFAR100(iData):
     class_order = np.arange(100).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR100("/data/datasets/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR100("/data/datasets/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR100("/home/liyuan/data/CIFAR", train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR100("/home/liyuan/data/CIFAR", train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -150,8 +150,8 @@ class iCIFAR224(iData):
         self.class_order = np.arange(100).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR100("/data/datasets/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR100("/data/datasets/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR100("/home/liyuan/data/CIFAR", train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR100("/home/liyuan/data/CIFAR", train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -179,8 +179,8 @@ class iImageNet1000(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "/data/datasets/ImageNet/train/"
-        test_dir = "/data/datasets/ImageNet/val/"
+        train_dir = "/home/liyuan/data/ImageNet/train/"
+        test_dir = "/home/liyuan/data/ImageNet/val/"
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -208,8 +208,8 @@ class iImageNet100(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "/data/datasets/ImageNet-100/train/"
-        test_dir = "/data/datasets/ImageNet-100/val/"
+        train_dir = "/home/liyuan/data/ImageNet-100/train/"
+        test_dir = "/home/liyuan/data/ImageNet-100/val/"
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -369,7 +369,7 @@ class domainnet(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/DomainNet/"
+        root_dir = "/home/liyuan/data/DomainNet/"
 
         self.train_data = []
         self.train_targets = []
@@ -419,7 +419,7 @@ class minidomainnet(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/DomainNet/"
+        root_dir = "/home/liyuan/data/DomainNet/"
         image_list_dir = os.path.join(root_dir, "splits_mini")
 
         self.train_data = []
@@ -470,7 +470,7 @@ class officehome(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/OfficeHomeDataset_10072016/"
+        root_dir = "/home/liyuan/data/OfficeHomeDataset_10072016/"
 
         self.train_data = []
         self.train_targets = []
@@ -502,7 +502,7 @@ class office31(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/office31/"
+        root_dir = "/home/liyuan/data/office31/"
 
         self.train_data = []
         self.train_targets = []
@@ -534,7 +534,7 @@ class officecaltech(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/office_caltech_10/"
+        root_dir = "/home/liyuan/data/office_caltech_10/"
 
         self.train_data = []
         self.train_targets = []
@@ -566,7 +566,7 @@ class imageclef(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/image_CLEF/"
+        root_dir = "/home/liyuan/data/image_CLEF/"
 
         self.train_data = []
         self.train_targets = []
@@ -598,7 +598,7 @@ class digitsdg(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/digits_dg"
+        root_dir = "/home/liyuan/data/digits_dg"
 
         self.train_data = []
         self.train_targets = []
@@ -632,7 +632,7 @@ class digitsfive(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/dg5"
+        root_dir = "/home/liyuan/data/dg5"
 
         self.train_data = []
         self.train_targets = []
@@ -664,7 +664,7 @@ class core50(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/data/datasets/core50/core50_128x128"
+        root_dir = "/home/liyuan/data/core50/core50_128x128"
 
         self.train_data = []
         self.train_targets = []

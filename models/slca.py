@@ -58,7 +58,7 @@ class Learner(BaseLearner):
         task_size = data_manager.get_task_size(self._cur_task)
         self.task_sizes.append(task_size)
         self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
-        self.topk = self._total_classes if self._total_classes<5 else 5
+        self.topk = min(self.topk, self._total_classes)
         self._network.update_fc(data_manager.get_task_size(self._cur_task))
         logging.info('Learning on {}-{}'.format(self._known_classes, self._total_classes))
 
