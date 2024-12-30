@@ -10,7 +10,14 @@ def count_parameters(model, trainable=False):
 
 
 def tensor2numpy(x):
-    return x.cpu().data.numpy() if x.is_cuda else x.data.numpy()
+    # return x.cpu().data.numpy() if x.is_cuda else x.data.numpy()
+    if isinstance(x, torch.Tensor):
+        return x.cpu().data.numpy() if x.is_cuda else x.data.numpy()
+    elif isinstance(x, np.ndarray):
+        return x
+    elif isinstance(x, int):
+        return x
+
 
 
 def target2onehot(targets, n_classes):
