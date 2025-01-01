@@ -414,7 +414,7 @@ class minidomainnet(iData):
     test_trsf = build_transform(False, None)
     common_trsf = [    ]
 
-    class_order = np.arange(345).tolist()
+    class_order = np.arange(126).tolist()
     domain_names = ["clipart", "painting", "real", "sketch"]
 
     def download_data(self):
