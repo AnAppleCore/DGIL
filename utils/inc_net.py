@@ -612,6 +612,101 @@ class PromptVitNet(nn.Module):
         x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
         return x
 
+
+# sprompt
+class SPromptVitNet(nn.Module):
+    def __init__(self, args:dict, pretrained:bool):
+        super(SPromptVitNet, self).__init__()
+
+        from backbone.vit_sprompt import _create_vision_transformer
+
+        model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12)
+        self.image_encoder =_create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **model_kwargs)
+
+        self.class_num = args["nb_classes"]
+        self.total_sessions = args["nb_tasks"]
+
+        if args.get("single_head", False):
+            self.classifier = nn.Linear(args["embd_dim"], self.class_num, bias=True)
+            self.single_head = True
+        else:
+            self.classifier_pool = nn.ModuleList([
+                nn.Linear(args["embd_dim"], self.class_num, bias=True)
+                for i in range(self.total_sessions)
+            ])
+            self.single_head = False
+
+        self.prompt_pool = nn.ModuleList([
+            nn.Linear(args["embd_dim"], args["prompt_length"], bias=False)
+            for i in range(self.total_sessions)
+        ])
+
+        self.current_task = 0
+
+    @property
+    def feature_dim(self):
+        return self.image_encoder.out_dim
+
+    def extract_vector(self, image):
+        image_features = self.image_encoder(image)
+        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        return image_features
+
+    def forward(self, image):
+
+        if self.single_head:
+            image_features = self.image_encoder(image, self.prompt_pool[self.current_task-1].weight)
+            logits = self.classifier(image_features)
+            return {
+                'logits': logits,
+                'features': image_features
+            }
+        else:
+            logits = []
+            image_features = self.image_encoder(image, self.prompt_pool[self.current_task-1].weight)
+            for prompts in [self.classifier_pool[self.current_task-1]]:
+                logits.append(prompts(image_features))
+
+            return {
+                'logits': torch.cat(logits, dim=1),
+                'features': image_features
+            }
+
+    def interface(self, image, selection):
+        instance_batch = torch.stack([i.weight for i in self.prompt_pool], 0)[selection, :, :]
+        image_features = self.image_encoder(image, instance_batch)
+
+        if self.single_head:
+            logits = self.classifier(image_features)
+            return logits
+    
+        else:
+            logits = []
+            for prompt in self.classifier_pool:
+                logits.append(prompt(image_features))
+
+            logits = torch.cat(logits,1)
+            selectedlogit = []
+            for idx, ii in enumerate(selection):
+                selectedlogit.append(logits[idx][self.class_num*ii:self.class_num*ii+self.class_num])
+            selectedlogit = torch.stack(selectedlogit)
+            return selectedlogit
+
+
+    def update_fc(self, nb_classes):
+        self.current_task +=1
+
+    def copy(self):
+        return copy.deepcopy(self)
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+        self.eval()
+
+        return self
+
+
 # coda_prompt
 class CodaPromptVitNet(nn.Module):
     def __init__(self, args, pretrained):

@@ -47,6 +47,8 @@ def get_model(model_name: str, args: dict) -> BaseLearner:
         from models.mos import Learner
     elif name == 'cofima':
         from models.cofima import Learner
+    elif name == 'sprompts':
+        from models.sprompts import Learner
     else:
         assert 0
     return Learner(args)
