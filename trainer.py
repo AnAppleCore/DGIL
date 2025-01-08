@@ -29,7 +29,7 @@ def _train(args:dict):
     if not os.path.exists(logs_name):
         os.makedirs(logs_name)
 
-    logfilename = "logs/{}/{}/{}/{}/{}_{}_{}".format(
+    logfilename = "logs/{}/{}/{}/{}/{}_{}_{}.log".format(
         args["model_name"],
         args["dataset"],
         init_cls,
@@ -42,10 +42,20 @@ def _train(args:dict):
         level=logging.INFO,
         format="%(asctime)s [%(filename)s] => %(message)s",
         handlers=[
-            logging.FileHandler(filename=logfilename + ".log"),
+            logging.FileHandler(filename=logfilename),
             logging.StreamHandler(sys.stdout),
         ],
     )
+
+    # switch the output log file
+    for handler in logging.root.handlers[:]:
+        if isinstance(handler, logging.FileHandler):
+            if handler.baseFilename!= logfilename:
+                print("Switching from {} to {}".format(handler.baseFilename, logfilename))
+                logging.root.removeHandler(handler)
+                file_handler = logging.FileHandler(filename=logfilename)
+                file_handler.setFormatter(logging.Formatter("%(asctime)s [%(filename)s] => %(message)s"))
+                logging.root.addHandler(file_handler)
 
     _set_random(args["seed"])
     _set_device(args)

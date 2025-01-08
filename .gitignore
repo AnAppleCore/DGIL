@@ -163,5 +163,5 @@ cython_debug/
 logs/
 .vscode/
 data/
-*.ipynb
 *.pdf
+*DGIL_baseline_3_run*
