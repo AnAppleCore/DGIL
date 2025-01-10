@@ -153,6 +153,49 @@ def get_backbone(args, pretrained=False):
             return model
         else:
             raise NotImplementedError("Inconsistent model name and model type")
+    # HiDe_Prompt
+    elif '_hide_prompt' in name:
+        if args["model_name"] == "hide_prompt":
+            from backbone import vit_hide_prompt
+            #TODO
+            return model
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+    # DoT
+    elif '_dot' in name:
+        if args["model_name"] == "dot":
+            from backbone import vit_dot
+            model = timm.create_model(
+                args["backbone_type"],
+                pretrained=args["pretrained"],
+                num_classes=args["nb_classes"],
+                num_domains=args["num_domains"],
+                drop_rate=args["drop"],
+                drop_path_rate=args["drop_path"],
+                drop_block_rate=None,
+                prompt_length=args["length"],
+                embedding_key=args["embedding_key"],
+                prompt_init=args["prompt_key_init"],
+                prompt_pool=args["prompt_pool"],
+                prompt_key=args["prompt_key"],
+                pool_size=args["size"],
+                top_k=args["top_k"],
+                batchwise_prompt=args["batchwise_prompt"],
+                prompt_key_init=args["prompt_key_init"],
+                head_type=args["head_type"],
+                use_prompt_mask=args["use_prompt_mask"],
+                use_g_prompt=args["use_g_prompt"],
+                g_prompt_length=args["g_prompt_length"],
+                g_prompt_layer_idx=args["g_prompt_layer_idx"],
+                use_prefix_tune_for_g_prompt=args["use_prefix_tune_for_g_prompt"],
+                use_e_prompt=args["use_e_prompt"],
+                e_prompt_layer_idx=args["e_prompt_layer_idx"],
+                use_prefix_tune_for_e_prompt=args["use_prefix_tune_for_e_prompt"],
+                same_key_value=args["same_key_value"],
+            )
+            return model
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
     # Coda_Prompt
     elif '_coda_prompt' in name:
         if args["model_name"] == "coda_prompt":
@@ -612,6 +655,35 @@ class PromptVitNet(nn.Module):
         x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
         return x
 
+# dot
+class DoTPromptVitNet(nn.Module):
+    def __init__(self, args, pretrained):
+        super(DoTPromptVitNet, self).__init__()
+        self.backbone = get_backbone(args, pretrained)
+        if args["get_original_backbone"]:
+            self.original_backbone = self.get_original_backbone(args)
+        else:
+            self.original_backbone = None
+            
+    def get_original_backbone(self, args):
+        return timm.create_model(
+            args["backbone_type"],
+            pretrained=args["pretrained"],
+            num_classes=args["nb_classes"],
+            drop_rate=args["drop"],
+            drop_path_rate=args["drop_path"],
+            drop_block_rate=None,
+        ).eval()
+
+    def forward(self, x, task_id=-1, train=False):
+        with torch.no_grad():
+            if self.original_backbone is not None:
+                cls_features = self.original_backbone(x)['pre_logits']
+            else:
+                cls_features = None
+
+        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
+        return x
 
 # sprompt
 class SPromptVitNet(nn.Module):

@@ -11,7 +11,7 @@ from utils.data_manager import (DataManager, DummyDataset, _get_idata,
 
 class DomainDataManager(DataManager):
     def __init__(self, dataset_name, shuffle, seed, init_cls, increment, args:dict):
-        self.arg = args
+        self.args = args
         self.dataset_name = dataset_name
         self.enable_dgil = args.get("enable_dgil", False)
         self.random_reference = args.get("random_reference", False)
@@ -205,3 +205,7 @@ class DomainDataManager(DataManager):
         np.random.shuffle(domain_ids)
         
         return domain_ids
+
+
+    def get_cur_domain(self, task_id):
+        return self.ref_domain_ids[task_id]

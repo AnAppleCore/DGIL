@@ -10,17 +10,22 @@
     "model_name": "slca",
     "model_postfix": "50e",
     "backbone_type": "vit_base_patch16_224",
-    "device": ["0"],
-    "seed": [1993],
+    "device": [
+        "0"
+    ],
+    "seed": [
+        1993
+    ],
     "lrate": 0.01,
-    "weight_decay": 5e-4,
+    "weight_decay": 0.0005,
     "lrate_decay": 0.1,
     "batch_size": 64,
     "epochs": 5,
     "ca_epochs": 3,
     "ca_with_logit_norm": 0.1,
-    "milestones": [40],
-
+    "milestones": [
+        40
+    ],
     "print_forget": true,
     "enable_dgil": true,
     "random_reference": true,

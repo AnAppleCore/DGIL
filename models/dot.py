@@ -1,13 +1,16 @@
 import logging
+from typing import Union
+
 import numpy as np
 import torch
-from torch import nn
-from tqdm import tqdm
-from torch import optim
+from models.base import BaseLearner
+from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from utils.inc_net import PromptVitNet
-from models.base import BaseLearner
+from tqdm import tqdm
+from utils.data_manager import DataManager
+from utils.domain_data_manager import DomainDataManager
+from utils.inc_net import DoTPromptVitNet
 from utils.toolkit import tensor2numpy
 
 # tune the model at first session with vpt, and then conduct simple shot.
@@ -17,7 +20,7 @@ class Learner(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
     
-        self._network = PromptVitNet(args, True)
+        self._network = DoTPromptVitNet(args, True)
 
         self.batch_size = args["batch_size"]
         self.init_lr = args["init_lr"]
@@ -46,11 +49,18 @@ class Learner(BaseLearner):
                 if param.requires_grad:
                     logging.info("{}: {}".format(name, param.numel()))
 
+        # domain related
+        self._cur_domain = 0
+
     def after_task(self):
         self._known_classes = self._total_classes
 
-    def incremental_train(self, data_manager):
+    def incremental_train(self, data_manager: Union[DataManager, DomainDataManager] = None):
         self._cur_task += 1
+        try:
+            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+        except:
+            self._cur_domain = 0
         self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
         # self._network.update_fc(self._total_classes)
         logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
@@ -137,8 +147,9 @@ class Learner(BaseLearner):
                 prev_idx = (slice(None), slice(None), slice(prev_start, prev_end)) if args["use_prefix_tune_for_e_prompt"] else (slice(None), slice(prev_start, prev_end))
 
                 with torch.no_grad():
-                    model.e_prompt.prompt.grad.zero_()
-                    model.e_prompt.prompt[cur_idx] = model.e_prompt.prompt[prev_idx]
+                    if model.use_e_prompt:
+                        model.e_prompt.prompt.grad.zero_()
+                        model.e_prompt.prompt[cur_idx] = model.e_prompt.prompt[prev_idx]
                     optimizer.param_groups[0]['params'] = model.parameters()
                 
         # Transfer previous learned prompt param keys to the new prompt
@@ -156,8 +167,9 @@ class Learner(BaseLearner):
                 prev_idx = (slice(prev_start, prev_end))
 
             with torch.no_grad():
-                model.e_prompt.prompt_key.grad.zero_()
-                model.e_prompt.prompt_key[cur_idx] = model.e_prompt.prompt_key[prev_idx]
+                if model.use_e_prompt:
+                    model.e_prompt.prompt_key.grad.zero_()
+                    model.e_prompt.prompt_key[cur_idx] = model.e_prompt.prompt_key[prev_idx]
                 optimizer.param_groups[0]['params'] = model.parameters()
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
@@ -173,11 +185,16 @@ class Learner(BaseLearner):
             
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
+                domain_logits = output["domain_logits"]
                 logits[:, :self._known_classes] = float('-inf')
 
                 loss = F.cross_entropy(logits, targets.long())
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
                     loss = loss - self.args["pull_constraint_coeff"] * output['reduce_sim']
+
+                domain_targets = torch.ones(domain_logits.shape[0], device=domain_logits.device) * self._cur_domain
+                domain_loss = F.cross_entropy(domain_logits, domain_targets.long())
+                loss = loss + domain_loss
 
                 optimizer.zero_grad()
                 loss.backward()

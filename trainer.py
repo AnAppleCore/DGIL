@@ -50,7 +50,7 @@ def _train(args:dict):
     # switch the output log file
     for handler in logging.root.handlers[:]:
         if isinstance(handler, logging.FileHandler):
-            if handler.baseFilename!= logfilename:
+            if not os.path.samefile(handler.baseFilename, logfilename):
                 print("Switching from {} to {}".format(handler.baseFilename, logfilename))
                 logging.root.removeHandler(handler)
                 file_handler = logging.FileHandler(filename=logfilename)
@@ -77,6 +77,7 @@ def _train(args:dict):
     
     args["nb_classes"] = data_manager.nb_classes # update args
     args["nb_tasks"] = data_manager.nb_tasks
+    args["num_domains"] = getattr(data_manager, "num_domains", 1)
     model = factory.get_model(args["model_name"], args)
     model.register_data_info(data_manager)
     logging.info("Class ID pairs: {}".format(model._class_id_pairs))

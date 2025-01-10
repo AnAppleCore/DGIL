@@ -10,20 +10,25 @@
     "model_name": "slca",
     "model_postfix": "20e",
     "backbone_type": "vit_base_patch16_224",
-    "device": ["0"],
-    "seed": [1993],
+    "device": [
+        "0"
+    ],
+    "seed": [
+        1993
+    ],
     "lrate": 0.01,
-    "weight_decay": 5e-4,
+    "weight_decay": 0.0005,
     "batch_size": 64,
     "lrate_decay": 0.1,
     "epochs": 20,
     "ca_epochs": 3,
     "ca_with_logit_norm": 0.1,
-    "milestones": [18],
-
+    "milestones": [
+        18
+    ],
     "print_forget": true,
     "enable_dgil": true,
-    "random_reference": false,
+    "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": true
+    "multi_domain_base_task": false
 }

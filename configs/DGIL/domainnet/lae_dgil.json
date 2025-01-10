@@ -9,17 +9,20 @@
     "increment": 35,
     "model_name": "lae",
     "backbone_type": "vit_base_patch16_224_lae",
-    "device": ["0"],
-    "seed": [1993],
+    "device": [
+        "0"
+    ],
+    "seed": [
+        1993
+    ],
     "tuned_epoch": 50,
     "init_lr": 0.00046875,
     "batch_size": 128,
     "weight_decay": 0,
-    "min_lr": 1e-5,
+    "min_lr": 1e-05,
     "optimizer": "adam",
     "scheduler": "constant",
     "reinit_optimizer": true,
-
     "pretrained": true,
     "drop": 0.0,
     "drop_path": 0.0,
@@ -28,10 +31,9 @@
     "pet_cls": "Prefix",
     "pet_length": 10,
     "down_sample_dim": 5,
-
     "print_forget": true,
     "enable_dgil": true,
-    "random_reference": false,
+    "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": true
+    "multi_domain_base_task": false
 }

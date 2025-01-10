@@ -30,6 +30,7 @@ from collections import OrderedDict
 from typing import Optional
 
 import torch
+from torch.autograd import Function
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -189,6 +190,18 @@ default_cfgs = {
     'vit_small_patch16_18x2_224': _cfg(url=''),
     'vit_base_patch16_18x2_224': _cfg(url=''),
 }
+
+
+class ReverseLayerF(Function):
+    @staticmethod
+    def forward(ctx, x, alpha=1):
+        ctx.alpha = alpha
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+        return output, None
 
 
 class PreT_Attention(nn.Module):
@@ -371,7 +384,7 @@ class VisionTransformer(nn.Module):
     """
 
     def __init__(
-            self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
+            self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, num_domains=0, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None,
             class_token=True, no_embed_class=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
             weight_init='', embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,
@@ -413,6 +426,7 @@ class VisionTransformer(nn.Module):
 
         self.img_size = img_size
         self.num_classes = num_classes
+        self.num_domains = num_domains
         self.global_pool = global_pool
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.class_token = class_token
@@ -481,6 +495,8 @@ class VisionTransformer(nn.Module):
                     prompt_pool=prompt_pool, prompt_key=prompt_key, pool_size=pool_size, top_k=top_k, batchwise_prompt=batchwise_prompt,
                     prompt_key_init=prompt_key_init, num_layers=num_e_prompt, use_prefix_tune_for_e_prompt=use_prefix_tune_for_e_prompt,
                     num_heads=num_heads, same_key_value=same_key_value)
+        else:
+            self.e_prompt = nn.Identity()
         
         if not (use_g_prompt or use_e_prompt):
             attn_layer = Attention
@@ -509,6 +525,7 @@ class VisionTransformer(nn.Module):
         # Classifier Head
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        self.domain_head = nn.Linear(self.embed_dim, num_domains) if num_domains > 0 else None
 
         if weight_init != 'skip':
             self.init_weights(weight_init)
@@ -547,6 +564,10 @@ class VisionTransformer(nn.Module):
     @torch.jit.ignore
     def get_classifier(self):
         return self.head
+    
+    @torch.jit.ignore
+    def get_domain_classifier(self):
+        return self.domain_head
 
     def reset_classifier(self, num_classes: int, global_pool=None):
         self.num_classes = num_classes
@@ -554,6 +575,10 @@ class VisionTransformer(nn.Module):
             assert global_pool in ('', 'avg', 'token')
             self.global_pool = global_pool
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+
+    def reset_domain_classifier(self, num_domains=None):
+        self.num_domains = num_domains
+        self.domain_head = nn.Linear(self.embed_dim, num_domains) if num_domains > 0 else None
 
     def forward_features(self, x, task_id=-1, cls_features=None, train=False):
         x = self.patch_embed(x)
@@ -567,21 +592,26 @@ class VisionTransformer(nn.Module):
             x = checkpoint_seq(self.blocks, x)
         else:
             if self.use_g_prompt or self.use_e_prompt:
-                if self.use_prompt_mask and train:
-                    start = task_id * self.e_prompt.top_k
-                    end = (task_id + 1) * self.e_prompt.top_k
-                    single_prompt_mask = torch.arange(start, end).to(x.device)
-                    prompt_mask = single_prompt_mask.unsqueeze(0).expand(x.shape[0], -1)
-                    if end > self.e_prompt.pool_size:
+
+                if self.use_e_prompt:
+                    if self.use_prompt_mask and train:
+                        start = task_id * self.e_prompt.top_k
+                        end = (task_id + 1) * self.e_prompt.top_k
+                        single_prompt_mask = torch.arange(start, end).to(x.device)
+                        prompt_mask = single_prompt_mask.unsqueeze(0).expand(x.shape[0], -1)
+                        if end > self.e_prompt.pool_size:
+                            prompt_mask = None
+                    else:
                         prompt_mask = None
+
+                    res = self.e_prompt(x, prompt_mask=prompt_mask, cls_features=cls_features)
+                    e_prompt = res['batched_prompt']
                 else:
-                    prompt_mask = None
-                
+                    res = dict()
+                    e_prompt = None
+
                 g_prompt_counter = -1
                 e_prompt_counter = -1
-
-                res = self.e_prompt(x, prompt_mask=prompt_mask, cls_features=cls_features)
-                e_prompt = res['batched_prompt']
 
                 for i, block in enumerate(self.blocks):
                     if i in self.g_prompt_layer_idx:
@@ -594,7 +624,7 @@ class VisionTransformer(nn.Module):
                             g_prompt=None
                         x = block(x, prompt=g_prompt)
                     
-                    elif i in self.e_prompt_layer_idx:
+                    elif i in self.e_prompt_layer_idx and self.use_e_prompt:
                         e_prompt_counter += 1
                         if self.use_prefix_tune_for_e_prompt:
                             # Prefix tunning, [B, 2, top_k * e_prompt_length, num_heads, embed_dim // num_heads]
@@ -639,6 +669,10 @@ class VisionTransformer(nn.Module):
         x = self.fc_norm(x)
         
         res['logits'] = self.head(x)
+
+        if self.domain_head is not None:
+            reverse_x = ReverseLayerF.apply(x, 1.0)
+            res['domain_logits'] = self.domain_head(reverse_x)
         
         return res
 
