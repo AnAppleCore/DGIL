@@ -169,7 +169,6 @@ def get_backbone(args, pretrained=False):
                 args["backbone_type"],
                 pretrained=args["pretrained"],
                 num_classes=args["nb_classes"],
-                num_domains=args["num_domains"],
                 drop_rate=args["drop"],
                 drop_path_rate=args["drop_path"],
                 drop_block_rate=None,
@@ -192,6 +191,8 @@ def get_backbone(args, pretrained=False):
                 e_prompt_layer_idx=args["e_prompt_layer_idx"],
                 use_prefix_tune_for_e_prompt=args["use_prefix_tune_for_e_prompt"],
                 same_key_value=args["same_key_value"],
+                num_domains=args["num_domains"],
+                domain_head_type=args["domain_head_type"],
             )
             return model
         else:

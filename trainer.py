@@ -84,15 +84,19 @@ def _train(args:dict):
 
     cnn_curve, nme_curve = {"top1": [], f"top{model.topk}": []}, {"top1": [], f"top{model.topk}": []}
     cnn_matrix, nme_matrix = [], []
+    domain_cls_curve = []
 
     if use_multi_domain_dataset(args["dataset"]):
         cnn_curve_per_domain, nme_curve_per_domain = {}, {}
         cnn_matrix_per_domain, nme_matrix_per_domain = {}, {}
+        domain_cls_curve_per_domain = {}
+
         for domain_id, domain_name in enumerate(data_manager.domain_names):
             cnn_curve_per_domain[domain_name] = {"top1": [], f"top{model.topk}": []}
             nme_curve_per_domain[domain_name] = {"top1": [], f"top{model.topk}": []}
             cnn_matrix_per_domain[domain_name] = []
             nme_matrix_per_domain[domain_name] = []
+            domain_cls_curve_per_domain[domain_name] = []
 
     for task in range(data_manager.nb_tasks):
         logging.info("All params: {}".format(count_parameters(model._network)))
@@ -125,6 +129,8 @@ def _train(args:dict):
             logging.info("CNN top{} curve: {}".format(model.topk, cnn_curve[f"top{model.topk}"]))
             logging.info("NME top1 curve: {}".format(nme_curve["top1"]))
             logging.info("NME top{} curve: {}\n".format(model.topk, nme_curve[f"top{model.topk}"]))
+            logging.info("Last Accuracy (CNN): {}".format(cnn_accy["top1"]))
+            logging.info("Last Accuracy (NME): {}".format(nme_accy["top1"]))
             logging.info("Average Accuracy (CNN): {}".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))
             logging.info("Average Accuracy (NME): {}".format(sum(nme_curve["top1"])/len(nme_curve["top1"])))
         else:
@@ -140,6 +146,7 @@ def _train(args:dict):
 
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
             logging.info("CNN top{} curve: {}\n".format(model.topk, cnn_curve[f"top{model.topk}"]))
+            logging.info("Last Accuracy (CNN): {}".format(cnn_accy["top1"]))
             logging.info("Average Accuracy (CNN): {} \n".format(sum(cnn_curve["top1"])/len(cnn_curve["top1"])))
 
 
@@ -173,6 +180,8 @@ def _train(args:dict):
                     logging.info("Domain [{}] {}: CNN top{} curve: {}".format(domain_id, domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
                     logging.info("Domain [{}] {}: NME top1 curve: {}".format(domain_id, domain_name, nme_curve_per_domain[domain_name]["top1"]))
                     logging.info("Domain [{}] {}: NME top{} curve: {}".format(domain_id, domain_name, model.topk, nme_curve_per_domain[domain_name][f"top{model.topk}"]))
+                    logging.info("Domain [{}] {}: Last Accuracy (CNN): {}".format(domain_id, domain_name, cnn_accy["top1"]))
+                    logging.info("Domain [{}] {}: Last Accuracy (NME): {}".format(domain_id, domain_name, nme_accy["top1"]))
                     logging.info("Domain [{}] {}: Average Accuracy (CNN): {}".format(domain_id, domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
                     logging.info("Domain [{}] {}: Average Accuracy (NME): {}\n".format(domain_id, domain_name, sum(nme_curve_per_domain[domain_name]["top1"])/len(nme_curve_per_domain[domain_name]["top1"])))
                 else:
@@ -189,7 +198,20 @@ def _train(args:dict):
 
                     logging.info("Domain [{}] {}: CNN top1 curve: {}".format(domain_id, domain_name, cnn_curve_per_domain[domain_name]["top1"]))
                     logging.info("Domain [{}] {}: CNN top{} curve: {}".format(domain_id, domain_name, model.topk, cnn_curve_per_domain[domain_name][f"top{model.topk}"]))
+                    logging.info("Domain [{}] {}: Last Accuracy (CNN): {}".format(domain_id, domain_name, cnn_accy["top1"]))
                     logging.info("Domain [{}] {}: Average Accuracy (CNN): {}\n".format(domain_id, domain_name, sum(cnn_curve_per_domain[domain_name]["top1"])/len(cnn_curve_per_domain[domain_name]["top1"])))
+
+
+        if hasattr(model, "eval_domain_classification"):
+            domain_cls_accy_per_domain = model.eval_domain_classification()
+            domain_cls_curve.append(domain_cls_accy_per_domain['total'])
+            logging.info("Domain Classification curve: {}".format(domain_cls_curve))
+            logging.info("Domain Classification Accuracy: {}\n".format(domain_cls_accy_per_domain['total']))
+
+            for domain_id, domain_name in enumerate(data_manager.domain_names):
+                domain_cls_curve_per_domain[domain_name].append(domain_cls_accy_per_domain[domain_name])
+                logging.info("Domain [{}] {}: Domain Classification curve: {}".format(domain_id, domain_name, domain_cls_curve_per_domain[domain_name]))
+                logging.info("Domain [{}] {}: Domain Classification Accuracy: {}\n".format(domain_id, domain_name, domain_cls_accy_per_domain[domain_name]))
 
         model.after_task()
 

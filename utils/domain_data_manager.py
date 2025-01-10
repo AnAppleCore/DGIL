@@ -29,6 +29,7 @@ class DomainDataManager(DataManager):
         self.use_path = idata.use_path
         self.num_domains = len(self._train_data)
         self.domain_names = idata.domain_names
+        assert self.num_domains == len(self.domain_names), "Number of domains and domain names do not match."
         logging.info("Number of domains: {}".format(self.num_domains))
 
         # Transforms

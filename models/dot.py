@@ -260,3 +260,28 @@ class Learner(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+    
+    def eval_domain_classification(self):
+        domain_cls_accy_per_domain = {}
+        for domain_id, domain_name in enumerate(self.data_manager.domain_names):
+            domain_test_loader = self.get_domain_test_loader(domain_id)
+            domain_y_pred = self._eval_domain_cls(domain_test_loader)
+            domain_cls_accy_per_domain[domain_name] = np.mean(domain_y_pred == domain_id)
+
+        domain_cls_accy_total = np.around(np.mean(list(domain_cls_accy_per_domain.values()))*100, decimals=2)
+        domain_cls_accy_per_domain = {k: np.around(v*100, decimals=2) for k, v in domain_cls_accy_per_domain.items()}
+        domain_cls_accy_per_domain["total"] = domain_cls_accy_total
+
+        return domain_cls_accy_per_domain
+
+    def _eval_domain_cls(self, loader):
+        self._network.eval()
+        y_pred = []
+        for _, (_, inputs, _) in enumerate(loader):
+            inputs = inputs.to(self._device)
+            with torch.no_grad():
+                outputs = self._network(inputs, task_id=self._cur_task)["domain_logits"]
+            predicts = torch.max(outputs, dim=1)[1]
+            y_pred.append(predicts.cpu().numpy())
+
+        return np.concatenate(y_pred)  # [N]

@@ -384,14 +384,15 @@ class VisionTransformer(nn.Module):
     """
 
     def __init__(
-            self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, num_domains=0, global_pool='token',
+            self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None,
             class_token=True, no_embed_class=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
             weight_init='', embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,
             prompt_length=None, embedding_key='cls', prompt_init='uniform', prompt_pool=False, prompt_key=False, pool_size=None,
             top_k=None, batchwise_prompt=False, prompt_key_init='uniform', head_type='token', use_prompt_mask=False,
             use_g_prompt=False, g_prompt_length=None, g_prompt_layer_idx=None, use_prefix_tune_for_g_prompt=False,
-            use_e_prompt=False, e_prompt_layer_idx=None, use_prefix_tune_for_e_prompt=False, same_key_value=False,):
+            use_e_prompt=False, e_prompt_layer_idx=None, use_prefix_tune_for_e_prompt=False, same_key_value=False,
+            num_domains=0, domain_head_type='gradient_reversal_linear'):
         """
         Args:
             img_size (int, tuple): input image size
@@ -445,6 +446,7 @@ class VisionTransformer(nn.Module):
 
         self.prompt_pool = prompt_pool
         self.head_type = head_type
+        self.domain_head_type = domain_head_type
         self.use_prompt_mask = use_prompt_mask
 
         self.use_g_prompt = use_g_prompt
@@ -525,7 +527,11 @@ class VisionTransformer(nn.Module):
         # Classifier Head
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-        self.domain_head = nn.Linear(self.embed_dim, num_domains) if num_domains > 0 else None
+        if 'linear' in domain_head_type and num_domains > 0:
+            self.domain_head = nn.Linear(self.embed_dim, num_domains)
+        else:
+            # original uninstructed backbone does not have domain head
+            self.domain_head = nn.Identity()
 
         if weight_init != 'skip':
             self.init_weights(weight_init)
@@ -576,9 +582,12 @@ class VisionTransformer(nn.Module):
             self.global_pool = global_pool
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def reset_domain_classifier(self, num_domains=None):
+    def reset_domain_classifier(self, num_domains=0):
         self.num_domains = num_domains
-        self.domain_head = nn.Linear(self.embed_dim, num_domains) if num_domains > 0 else None
+        if 'linear' in self.domain_head_type and num_domains > 0:
+            self.domain_head = nn.Linear(self.embed_dim, num_domains)
+        else:
+            self.domain_head = nn.Identity()
 
     def forward_features(self, x, task_id=-1, cls_features=None, train=False):
         x = self.patch_embed(x)
@@ -670,8 +679,10 @@ class VisionTransformer(nn.Module):
         
         res['logits'] = self.head(x)
 
-        if self.domain_head is not None:
-            reverse_x = ReverseLayerF.apply(x, 1.0)
+        if self.domain_head_type == 'linear':
+            res['domain_logits'] = self.domain_head(x)
+        elif self.domain_head_type == 'gradient_reversal_linear':
+            reverse_x = ReverseLayerF.apply(x)
             res['domain_logits'] = self.domain_head(reverse_x)
         
         return res
