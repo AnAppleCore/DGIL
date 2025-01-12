@@ -3,7 +3,9 @@ from typing import Union
 
 import numpy as np
 import torch
+import torch.distributions as dist
 from models.base import BaseLearner
+from sklearn.cluster import KMeans
 from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -51,6 +53,8 @@ class Learner(BaseLearner):
 
         # domain related
         self._cur_domain = 0
+        self.domain_distributions = {}
+        self.class_distributions = {}
 
     def after_task(self):
         self._known_classes = self._total_classes
@@ -76,6 +80,7 @@ class Learner(BaseLearner):
             print('Multiple GPUs')
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader)
+        self._compute_domain_distribution(self.train_dataset)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -90,33 +95,37 @@ class Learner(BaseLearner):
 
         if self._cur_task > 0 and self.args["reinit_optimizer"]:
             optimizer = self.get_optimizer()
-            
+
         self._init_train(train_loader, test_loader, optimizer, scheduler)
 
-    def get_optimizer(self):
+    def get_optimizer(self, params_dict=None):
+
+        if params_dict is None:
+            params_dict = filter(lambda p: p.requires_grad, self._network.parameters())
+
         if self.args['optimizer'] == 'sgd':
             optimizer = optim.SGD(
-                filter(lambda p: p.requires_grad, self._network.parameters()), 
+                params_dict,
                 momentum=0.9, 
                 lr=self.init_lr,
                 weight_decay=self.weight_decay
             )
         elif self.args['optimizer'] == 'adam':
             optimizer = optim.Adam(
-                filter(lambda p: p.requires_grad, self._network.parameters()),
+                params_dict,
                 lr=self.init_lr, 
                 weight_decay=self.weight_decay
             )
             
         elif self.args['optimizer'] == 'adamw':
             optimizer = optim.AdamW(
-                filter(lambda p: p.requires_grad, self._network.parameters()),
+                params_dict,
                 lr=self.init_lr, 
                 weight_decay=self.weight_decay
             )
 
         return optimizer
-    
+
     def get_scheduler(self, optimizer):
         if self.args["scheduler"] == 'cosine':
             scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=self.args['tuned_epoch'], eta_min=self.min_lr)
@@ -185,16 +194,11 @@ class Learner(BaseLearner):
             
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
-                domain_logits = output["domain_logits"]
                 logits[:, :self._known_classes] = float('-inf')
 
                 loss = F.cross_entropy(logits, targets.long())
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
                     loss = loss - self.args["pull_constraint_coeff"] * output['reduce_sim']
-
-                domain_targets = torch.ones(domain_logits.shape[0], device=domain_logits.device) * self._cur_domain
-                domain_loss = F.cross_entropy(domain_logits, domain_targets.long())
-                loss = loss + domain_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -260,28 +264,99 @@ class Learner(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-    
-    def eval_domain_classification(self):
-        domain_cls_accy_per_domain = {}
-        for domain_id, domain_name in enumerate(self.data_manager.domain_names):
-            domain_test_loader = self.get_domain_test_loader(domain_id)
-            domain_y_pred = self._eval_domain_cls(domain_test_loader)
-            domain_cls_accy_per_domain[domain_name] = np.mean(domain_y_pred == domain_id)
 
-        domain_cls_accy_total = np.around(np.mean(list(domain_cls_accy_per_domain.values()))*100, decimals=2)
-        domain_cls_accy_per_domain = {k: np.around(v*100, decimals=2) for k, v in domain_cls_accy_per_domain.items()}
-        domain_cls_accy_per_domain["total"] = domain_cls_accy_total
-
-        return domain_cls_accy_per_domain
-
-    def _eval_domain_cls(self, loader):
-        self._network.eval()
-        y_pred = []
-        for _, (_, inputs, _) in enumerate(loader):
-            inputs = inputs.to(self._device)
+    def _compute_domain_distribution(self, dataset):
+        self._network.backbone.eval()
+        self._network.original_backbone.eval()
+        data_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=num_workers)
+        features = []
+        for i, (_, inputs, targets) in enumerate(data_loader):
+            inputs, targets = inputs.to(self._device), targets.to(self._device)
+            mask = (targets >= self._known_classes).nonzero().view(-1)
+            inputs = torch.index_select(inputs, 0, mask)
             with torch.no_grad():
-                outputs = self._network(inputs, task_id=self._cur_task)["domain_logits"]
-            predicts = torch.max(outputs, dim=1)[1]
-            y_pred.append(predicts.cpu().numpy())
+                feature = self._network(inputs, task_id=self._cur_task, train=True)["pre_logits"]
+            features.append(feature)
+        features = torch.cat(features, dim=0)
+        mean = features.mean(dim=0)
+        cov = torch.mm(features.t(), features) / len(features)
 
-        return np.concatenate(y_pred)  # [N]
+        if self._cur_domain in self.domain_distributions:
+            # update the existing domain distribution
+            existing_distribution = self.domain_distributions[self._cur_domain]
+            existing_distribution.update(mean, cov, len(features))
+            self.domain_distributions[self._cur_domain] = existing_distribution
+        else:
+            new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
+            new_distribution.update(mean, cov, len(features))
+            self.domain_distributions[self._cur_domain] = new_distribution
+
+
+class CovarianceDist:
+    def __init__(self, feature_dim, device):
+        self.mean = torch.zeros(feature_dim).to(device)
+        self.cov = torch.zeros((feature_dim, feature_dim)).to(device)
+        self.num_samples = 0
+        self.device = device
+
+    def update(self, new_mean, new_cov, new_samples):
+        """Update the mean, covariance, and sample count using the new data."""
+        total_samples = self.num_samples + new_samples
+        self.mean = (self.num_samples * self.mean + new_samples * new_mean) / total_samples
+        diff = new_mean - self.mean
+        self.cov = (self.num_samples * self.cov + new_samples * new_cov) / total_samples
+        self.cov += (self.num_samples * new_samples) / (total_samples ** 2) * torch.outer(diff, diff)
+        self.num_samples = total_samples
+
+    def generate(self, num_samples_to_generate):
+        """Generate a feature vector by sampling from the domain's distribution."""
+        if self.num_samples == 0:
+            raise ValueError("Cannot generate samples because the distribution is empty.")
+        else:
+            mvn = dist.MultivariateNormal(self.mean, covariance_matrix=self.cov)
+            feature_vector = mvn.sample((num_samples_to_generate,)).to(self.device)
+        
+        return feature_vector
+    
+
+class MultiCentroidDist:
+    def __init__(self, n_centroids, feature_dim, device):
+        self.n_clusters = n_centroids
+        self.feature_dim = feature_dim
+        self.device = device
+        self.cluster_means = None
+        self.cluster_vars = None
+    
+    def compute_centroids(self, features:torch.Tensor):
+        features_np = features.cpu().numpy()
+        kmeans = KMeans(n_clusters=self.n_clusters).fit(features_np)
+        cluster_means = []
+        cluster_vars = []
+        km_labels = kmeans.labels_
+        for i in range(self.n_clusters):
+            cluster_mask = (km_labels == i)
+            cluster_mean = np.mean(features_np[cluster_mask], axis=0)
+            cluster_var = np.var(features_np[cluster_mask], axis=0)
+            cluster_means.append(torch.tensor(cluster_mean).to(self.device))
+            cluster_vars.append(torch.tensor(cluster_var).to(self.device))
+        self.cluster_means = cluster_means
+        self.cluster_vars = cluster_vars
+    
+    def generate(self, num_samples_to_generate):
+        """Generate a feature vector by sampling from the domain's distribution."""
+        if self.cluster_means is None:
+            raise ValueError("Cannot generate samples because the centroids are not computed.")
+        else:
+            feature_vectors = []
+            for i in range(self.n_clusters):
+                if self.cluster_vars[i].sum() == 0:
+                    continue
+                mvn = dist.MultivariateNormal(
+                    self.cluster_means[i], 
+                    covariance_matrix=torch.diag(self.cluster_vars[i])+1e-4*torch.eye(self.feature_dim).to(self.device)
+                )
+                feature_vector = mvn.sample((num_samples_to_generate,))
+                feature_vectors.append(feature_vector)
+            feature_vectors = torch.cat(feature_vectors, dim=0).to(self.device)
+        
+        return feature_vectors

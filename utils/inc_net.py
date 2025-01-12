@@ -192,7 +192,6 @@ def get_backbone(args, pretrained=False):
                 use_prefix_tune_for_e_prompt=args["use_prefix_tune_for_e_prompt"],
                 same_key_value=args["same_key_value"],
                 num_domains=args["num_domains"],
-                domain_head_type=args["domain_head_type"],
             )
             return model
         else:

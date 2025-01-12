@@ -36,18 +36,18 @@
     "pretrained": true,
     "drop": 0.0,
     "drop_path": 0.0,
-    "use_g_prompt": true,
+    "use_g_prompt": false,
     "g_prompt_length": 5,
-    "g_prompt_layer_idx": [
+    "g_prompt_layer_idx": [],
+    "use_prefix_tune_for_g_prompt": true,
+    "use_e_prompt": true,
+    "e_prompt_layer_idx": [
         0,
         1,
         2,
         3,
         4
     ],
-    "use_prefix_tune_for_g_prompt": true,
-    "use_e_prompt": false,
-    "e_prompt_layer_idx": [],
     "use_prefix_tune_for_e_prompt": true,
     "prompt_pool": true,
     "size": 10,
