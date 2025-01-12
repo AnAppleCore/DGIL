@@ -1,0 +1,34 @@
+{
+    "prefix": "CIL",
+    "dataset": "officecaltech",
+    "memory_size": 0,
+    "memory_per_class": 0,
+    "fixed_memory": true,
+    "shuffle": true,
+    "init_cls": 2,
+    "increment": 2,
+    "model_name": "sprompts",
+    "backbone_type": "vit_base_patch16_224",
+    "device": [
+        "0"
+    ],
+    "seed": [
+        1994,
+        1995,
+        1996
+    ],
+    "embd_dim": 768,
+    "prompt_length": 10,
+    "EPSILON": 1e-08,
+    "init_epoch": 20,
+    "init_lr": 0.01,
+    "init_lr_decay": 0.1,
+    "init_weight_decay": 0.0005,
+    "epochs": 20,
+    "lrate": 0.01,
+    "lrate_decay": 0.1,
+    "batch_size": 128,
+    "weight_decay": 0.0002,
+    "num_workers": 16,
+    "print_forget": true
+}
