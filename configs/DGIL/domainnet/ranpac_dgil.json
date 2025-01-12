@@ -5,8 +5,8 @@
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 13,
-    "increment": 13,
+    "init_cls": 35,
+    "increment": 35,
     "model_name": "ranpac",
     "backbone_type": "pretrained_vit_b16_224_adapter",
     "device": [
