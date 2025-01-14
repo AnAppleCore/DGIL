@@ -675,15 +675,43 @@ class DoTPromptVitNet(nn.Module):
             drop_block_rate=None,
         ).eval()
 
-    def forward(self, x, task_id=-1, train=False):
+    def forward(self, x, task_id=-1, train=False, shuffle_tokens=False):
         with torch.no_grad():
             if self.original_backbone is not None:
                 cls_features = self.original_backbone(x)['pre_logits']
             else:
                 cls_features = None
 
-        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
+        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
         return x
+    
+    def extract_vector(self, x, task_id=-1, train=False, shuffle_tokens=False):
+        with torch.no_grad():
+            if self.original_backbone is not None:
+                cls_features = self.original_backbone(x)['pre_logits']
+            else:
+                cls_features = None
+
+        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
+        return x['pre_logits']
+    
+    def forward_uninstructed_features(self, x):
+        with torch.no_grad():
+            if self.original_backbone is not None:
+                cls_features = self.original_backbone(x)['pre_logits']
+            else:
+                raise ValueError("No original backbone is provided.")
+        return cls_features
+    
+    def positive_transform_forward(self, u, domain_ids=[0], return_logits=False):
+        return self.backbone.positive_transform_head(
+            u, domain_ids=domain_ids, return_logits=return_logits
+        )
+    
+    def negative_transform_forward(self, i, domain_id=0):
+        return self.backbone.negative_transform_head(
+            i, domain_id=domain_id
+        )
 
 # sprompt
 class SPromptVitNet(nn.Module):
