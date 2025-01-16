@@ -1,12 +1,12 @@
 {
-    "prefix": "CIL",
-    "dataset": "officehome",
+    "prefix": "DGIL_con_0001",
+    "dataset": "imageclef",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 13,
-    "increment": 13,
+    "init_cls": 2,
+    "increment": 2,
     "model_name": "dot",
     "backbone_type": "vit_base_patch16_224_dot",
     "get_original_backbone": true,
@@ -61,5 +61,11 @@
     "pull_constraint": true,
     "pull_constraint_coeff": 0.1,
     "same_key_value": false,
-    "print_forget": true
+    "print_forget": true,
+    "enable_dgil": true,
+    "random_reference": true,
+    "reference_domain_id": 0,
+    "multi_domain_base_task": false,
+    "use_cls_con_loss": true,
+    "cls_con_weight": 0.001
 }

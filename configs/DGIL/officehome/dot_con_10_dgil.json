@@ -1,5 +1,5 @@
 {
-    "prefix": "CIL",
+    "prefix": "DGIL_con_10",
     "dataset": "officehome",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -61,5 +61,11 @@
     "pull_constraint": true,
     "pull_constraint_coeff": 0.1,
     "same_key_value": false,
-    "print_forget": true
+    "print_forget": true,
+    "enable_dgil": true,
+    "random_reference": true,
+    "reference_domain_id": 0,
+    "multi_domain_base_task": false,
+    "use_cls_con_loss": true,
+    "cls_con_weight": 10
 }

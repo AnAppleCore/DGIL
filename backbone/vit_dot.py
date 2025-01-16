@@ -204,6 +204,25 @@ class ReverseLayerF(Function):
     def backward(ctx, grad_output):
         output = grad_output.neg() * ctx.alpha
         return output, None
+    
+
+class MLP(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
 
 
 class PreT_Attention(nn.Module):
@@ -394,7 +413,7 @@ class VisionTransformer(nn.Module):
             top_k=None, batchwise_prompt=False, prompt_key_init='uniform', head_type='token', use_prompt_mask=False,
             use_g_prompt=False, g_prompt_length=None, g_prompt_layer_idx=None, use_prefix_tune_for_g_prompt=False,
             use_e_prompt=False, e_prompt_layer_idx=None, use_prefix_tune_for_e_prompt=False, same_key_value=False,
-            num_domains=0):
+            num_domains=0, domain_transformation=False, domain_head_pool=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -430,6 +449,8 @@ class VisionTransformer(nn.Module):
         self.img_size = img_size
         self.num_classes = num_classes
         self.num_domains = num_domains
+        self.domain_transformation = domain_transformation
+        self.domain_head_pool = domain_head_pool
         self.global_pool = global_pool
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.class_token = class_token
@@ -530,6 +551,22 @@ class VisionTransformer(nn.Module):
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
+        if domain_transformation:
+            self.domain_positive_transformations = nn.ModuleList([
+                MLP(in_features=embed_dim, hidden_features=embed_dim, act_layer=act_layer, drop=drop_rate) 
+                for _ in range(num_domains)
+            ])
+            self.domain_negative_transformations = nn.ModuleList([
+                MLP(in_features=embed_dim, hidden_features=embed_dim, act_layer=act_layer, drop=drop_rate) 
+                for _ in range(num_domains)
+            ])
+
+        if domain_head_pool:
+            self.domain_head_pool = nn.ModuleList([
+                nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity() 
+                for _ in range(num_domains)
+            ])
+
         if weight_init != 'skip':
             self.init_weights(weight_init)
 
@@ -575,8 +612,14 @@ class VisionTransformer(nn.Module):
             self.global_pool = global_pool
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, task_id=-1, cls_features=None, train=False):
+    def forward_features(self, x, task_id=-1, cls_features=None, train=False, shuffle_tokens=False):
         x = self.patch_embed(x)
+
+        if shuffle_tokens:
+            # Shuffle the tokens along the sequence dimension (dim=1)
+            B, N, C = x.shape
+            idx = torch.randperm(N)
+            x = x[:, idx, :]
 
         if self.cls_token is not None:
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
@@ -667,10 +710,34 @@ class VisionTransformer(nn.Module):
         
         return res
 
-    def forward(self, x, task_id=-1, cls_features=None, train=False):
-        res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train)
+    def forward(self, x, task_id=-1, cls_features=None, train=False, shuffle_tokens=False):
+        res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
         res = self.forward_head(res)
         return res
+    
+    def positive_transform_head(self, uninstructed_features=None, domain_ids=[0], return_logits=False):
+        positive_feature_dict = {}
+        domain_logit_dict = {}
+        for domain_id in domain_ids:
+            domain_positive_transformation = self.domain_positive_transformations[domain_id]
+            positive_features = domain_positive_transformation(uninstructed_features)
+            positive_feature_dict[domain_id] = positive_features
+
+            if return_logits:
+                positive_features = self.fc_norm(positive_features)
+                domain_head = self.domain_head_pool[domain_id]
+                domain_logits = domain_head(positive_features)
+                domain_logit_dict[domain_id] = domain_logits
+
+        if return_logits:
+            return positive_feature_dict, domain_logit_dict
+        else:
+            return positive_feature_dict
+        
+    def negative_transform_head(self, instructed_features=None, domain_id=0):
+        domain_negative_transformation = self.domain_negative_transformations[domain_id]
+        negative_features = domain_negative_transformation(instructed_features)
+        return negative_features
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ''):

@@ -30,6 +30,9 @@ class Learner(BaseLearner):
         self.min_lr = args.get("min_lr", 1e-8)
         self.num_workers = args.get("num_workers", 8)
 
+        self.first_sl = args.get("first_sl", False)
+        self.slow_rate = args.get("slow_rate", 0.1)
+
         self.use_cls_con_loss = args.get("use_cls_con_loss", False)
         self.use_dom_con_loss = args.get("use_dom_con_loss", False)
         self.contrastive_temp = args.get("contrastive_temp", 0.8)
@@ -179,15 +182,13 @@ class Learner(BaseLearner):
         logging.info("Computing distributions...")
         self._network.backbone.eval()
         self._network.original_backbone.eval()
-        features = []
-        labels = []
+        features, labels = [], []
         for i, (_, inputs, targets) in enumerate(data_loader):
             inputs, targets = inputs.to(self._device), targets.to(self._device)
             mask = (targets >= self._known_classes).nonzero().view(-1)
             inputs = torch.index_select(inputs, 0, mask)
             targets = torch.index_select(targets, 0, mask)
             with torch.no_grad():
-                #TODO domain-disentangle augmentation like mixup or token shuffle?
                 feature = self._network(inputs, task_id=self._cur_task, train=True, shuffle_tokens=True)["pre_logits"]
             features.append(feature)
             labels.append(targets)
@@ -218,7 +219,6 @@ class Learner(BaseLearner):
             inputs = torch.index_select(inputs, 0, mask)
             targets = torch.index_select(targets, 0, mask)
             with torch.no_grad():
-                #TODO domain-disentangle augmentation like mixup or token shuffle?
                 feature = self._network(inputs, task_id=self._cur_task, train=True)["pre_logits"]
                 raw_feature = self._network.forward_uninstructed_features(inputs)
             features.append(feature)
@@ -255,10 +255,9 @@ class Learner(BaseLearner):
         # freeze and record the parameters except the domain transformation mlp and domain-specific head
         active_params_dict = {}
         for name, param in self._network.named_parameters():
-            if "domain_head" not in name and "domain_mlp" not in name:
-                if param.requires_grad:
-                    active_params_dict[name] = param
-                    param.requires_grad = False
+            if param.requires_grad and 'domain' not in name:
+                active_params_dict[name] = param
+                param.requires_grad = False
 
         optimizer = self.get_optimizer()
         scheduler = self.get_scheduler(optimizer)
@@ -272,30 +271,45 @@ class Learner(BaseLearner):
             correct, total = 0, 0
         pass
 
+    def get_optimizer(self):
 
-    def get_optimizer(self, params_dict=None):
+        if self.first_sl and self._cur_task == 0:
+            prompt_lrate = self.init_lr * self.slow_rate
+        else:
+            prompt_lrate = self.init_lr
 
-        if params_dict is None:
-            params_dict = filter(lambda p: p.requires_grad, self._network.parameters())
+        prompt_params, output_head_params, other_params = [], [], []
+        for name, param in self._network.named_parameters():
+            if param.requires_grad and 'prompt' in name:
+                prompt_params.append(param)
+                logging.info(f"Prompt parameter: {name} with lr {prompt_lrate}")
+            elif param.requires_grad and 'head' in name:
+                output_head_params.append(param)
+                logging.info(f"Output head parameter: {name}")
+            elif param.requires_grad:
+                other_params.append(param)
+                logging.info(f"Other parameter: {name}")
+
+        param_groups = [
+            {'params': prompt_params, 'lr': prompt_lrate},
+            {'params': output_head_params, 'lr': self.init_lr},
+            {'params': other_params, 'lr': self.init_lr}
+        ]
 
         if self.args['optimizer'] == 'sgd':
             optimizer = optim.SGD(
-                params_dict,
-                momentum=0.9, 
-                lr=self.init_lr,
+                param_groups,
+                momentum=0.9,
                 weight_decay=self.weight_decay
             )
         elif self.args['optimizer'] == 'adam':
             optimizer = optim.Adam(
-                params_dict,
-                lr=self.init_lr, 
+                param_groups,
                 weight_decay=self.weight_decay
             )
-            
         elif self.args['optimizer'] == 'adamw':
             optimizer = optim.AdamW(
-                params_dict,
-                lr=self.init_lr, 
+                param_groups, 
                 weight_decay=self.weight_decay
             )
 
@@ -389,6 +403,7 @@ class Learner(BaseLearner):
 
     def _extract_vectors(self, loader):
         self._network.eval()
+        self._network.original_backbone.eval()
         vectors, targets = [], []
 
         with torch.no_grad():

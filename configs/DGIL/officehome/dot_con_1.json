@@ -1,5 +1,5 @@
 {
-    "prefix": "CIL",
+    "prefix": "CIL_con_1",
     "dataset": "officehome",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -61,5 +61,7 @@
     "pull_constraint": true,
     "pull_constraint_coeff": 0.1,
     "same_key_value": false,
-    "print_forget": true
+    "print_forget": true,
+    "use_cls_con_loss": true,
+    "cls_con_weight": 1
 }
