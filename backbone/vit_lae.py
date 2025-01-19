@@ -1279,7 +1279,7 @@ def vit_small_patch32_384_lae(pretrained=False, **kwargs):
 
 
 @register_model
-def vit_small_patch16_224_l2p(pretrained=False, **kwargs):
+def vit_small_patch16_224_lae(pretrained=False, **kwargs):
     """ ViT-Small (ViT-S/16)
     NOTE I've replaced my previous 'small' model definition and weights with the small variant from the DeiT paper
     """

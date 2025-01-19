@@ -36,15 +36,6 @@
     "pretrained": true,
     "drop": 0.0,
     "drop_path": 0.0,
-    "use_g_prompt": false,
-    "g_prompt_length": 5,
-    "g_prompt_layer_idx": [],
-    "use_prefix_tune_for_g_prompt": true,
-    "use_e_prompt": true,
-    "e_prompt_layer_idx": [
-        0
-    ],
-    "use_prefix_tune_for_e_prompt": false,
     "prompt_pool": true,
     "size": 10,
     "length": 5,
@@ -60,7 +51,6 @@
     "predefined_key": "",
     "pull_constraint": true,
     "pull_constraint_coeff": 0.1,
-    "same_key_value": false,
     "print_forget": true,
     "enable_dgil": true,
     "random_reference": true,

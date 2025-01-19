@@ -40,6 +40,8 @@ class Learner(BaseLearner):
         self.dom_con_weight = args.get("dom_con_weight", 0.01)
         self.num_class_centroids = args.get("num_class_centroids", 10)
 
+        self.use_multicentroid_nme = args.get("use_multicentroid_nme", False)
+
         # Freeze the parameters for ViT.
         if self.args["freeze"]:
             for p in self._network.original_backbone.parameters():
@@ -182,32 +184,33 @@ class Learner(BaseLearner):
         logging.info("Computing distributions...")
         self._network.backbone.eval()
         self._network.original_backbone.eval()
-        features, labels = [], []
-        for i, (_, inputs, targets) in enumerate(data_loader):
-            inputs, targets = inputs.to(self._device), targets.to(self._device)
-            mask = (targets >= self._known_classes).nonzero().view(-1)
-            inputs = torch.index_select(inputs, 0, mask)
-            targets = torch.index_select(targets, 0, mask)
-            with torch.no_grad():
-                feature = self._network(inputs, task_id=self._cur_task, train=True, shuffle_tokens=True)["pre_logits"]
-            features.append(feature)
-            labels.append(targets)
-        features = torch.cat(features, dim=0)
-        labels = torch.cat(labels, dim=0)
-
         # for domain distribution
-        mean = features.mean(dim=0)
-        cov = torch.mm(features.t(), features) / len(features)
-        if self._cur_domain in self.domain_distributions:
-            # update the existing domain distribution
-            existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
-            existing_distribution.update(mean, cov, len(features))
-            self.domain_distributions[self._cur_domain] = existing_distribution
-        else:
-            new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
-            new_distribution.update(mean, cov, len(features))
-            self.domain_distributions[self._cur_domain] = new_distribution
-        logging.info(f"Distributions computed for domain {self._cur_domain}")
+        if self.use_dom_con_loss:
+            features, labels = [], []
+            for i, (_, inputs, targets) in enumerate(data_loader):
+                inputs, targets = inputs.to(self._device), targets.to(self._device)
+                mask = (targets >= self._known_classes).nonzero().view(-1)
+                inputs = torch.index_select(inputs, 0, mask)
+                targets = torch.index_select(targets, 0, mask)
+                with torch.no_grad():
+                    feature = self._network(inputs, task_id=self._cur_task, train=True, shuffle_tokens=True)["pre_logits"]
+                features.append(feature)
+                labels.append(targets)
+            features = torch.cat(features, dim=0)
+            labels = torch.cat(labels, dim=0)
+
+            mean = features.mean(dim=0)
+            cov = torch.mm(features.t(), features) / len(features)
+            if self._cur_domain in self.domain_distributions:
+                # update the existing domain distribution
+                existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
+                existing_distribution.update(mean, cov, len(features))
+                self.domain_distributions[self._cur_domain] = existing_distribution
+            else:
+                new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
+                new_distribution.update(mean, cov, len(features))
+                self.domain_distributions[self._cur_domain] = new_distribution
+            logging.info(f"Distributions computed for domain {self._cur_domain}")
 
         # for class distribution
         features = []
@@ -241,7 +244,10 @@ class Learner(BaseLearner):
                 new_distribution = MultiCentroidDist(n_centroids=self.num_class_centroids, feature_dim=cls_feature.shape[-1], device=self._device)
                 new_distribution.compute_centroids(cls_feature)
                 self.class_distributions[cls_label_id] = new_distribution
-                self._class_means[cls_label_id] = cls_feature.mean(dim=0) # new_distribution.get_means_vector()
+                if self.use_multicentroid_nme:
+                    self._class_means[cls_label_id] = new_distribution.cluster_means
+                else:
+                    self._class_means[cls_label_id] = cls_feature.mean(dim=0) # new_distribution.get_means_vector()
                 
                 new_raw_distribution = MultiPrototypeDist(n_prototypes=self.num_class_centroids, feature_dim=cls_raw_feature.shape[-1], device=self._device)
                 closest_indices = new_distribution.closest_id(cls_feature)
@@ -341,13 +347,12 @@ class Learner(BaseLearner):
             if (prev_end > args["size"]) or (cur_end > args["size"]):
                 pass
             else:
-                cur_idx = (slice(None), slice(None), slice(cur_start, cur_end)) if args["use_prefix_tune_for_e_prompt"] else (slice(None), slice(cur_start, cur_end))
-                prev_idx = (slice(None), slice(None), slice(prev_start, prev_end)) if args["use_prefix_tune_for_e_prompt"] else (slice(None), slice(prev_start, prev_end))
+                cur_idx = (slice(cur_start, cur_end))
+                prev_idx = (slice(prev_start, prev_end))
 
                 with torch.no_grad():
-                    if model.use_e_prompt:
-                        model.e_prompt.prompt.grad.zero_()
-                        model.e_prompt.prompt[cur_idx] = model.e_prompt.prompt[prev_idx]
+                    model.prompt.prompt.grad.zero_()
+                    model.prompt.prompt[cur_idx] = model.prompt.prompt[prev_idx]
                     optimizer.param_groups[0]['params'] = model.parameters()
                 
         # Transfer previous learned prompt param keys to the new prompt
@@ -365,9 +370,8 @@ class Learner(BaseLearner):
                 prev_idx = (slice(prev_start, prev_end))
 
             with torch.no_grad():
-                if model.use_e_prompt:
-                    model.e_prompt.prompt_key.grad.zero_()
-                    model.e_prompt.prompt_key[cur_idx] = model.e_prompt.prompt_key[prev_idx]
+                model.prompt.prompt_key.grad.zero_()
+                model.prompt.prompt_key[cur_idx] = model.prompt.prompt_key[prev_idx]
                 optimizer.param_groups[0]['params'] = model.parameters()
 
     def _eval_cnn(self, loader):
@@ -392,14 +396,31 @@ class Learner(BaseLearner):
         vectors, y_true = self._extract_vectors(loader)
         vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
 
-        class_means_np = torch.cat([class_means[i].view(1, -1) for i in range(self._total_classes)], dim=0)
-        class_means_np = tensor2numpy(class_means_np)
-        class_means_np = (class_means_np.T / (np.linalg.norm(class_means_np.T, axis=0) + EPSILON)).T
-        
-        dists = cdist(class_means_np, vectors, "sqeuclidean")  # [nb_classes, N]
-        scores = dists.T  # [N, nb_classes], choose the one with the smallest distance
+        if self.use_multicentroid_nme:
+            scores_list = []
+            for centroid_id in range(self.num_class_centroids):
+                class_means_np = torch.cat(
+                    [class_means[i][centroid_id].view(1, -1) for i in range(self._total_classes)], dim=0
+                )
+                class_means_np = tensor2numpy(class_means_np)
+                class_means_np = (class_means_np.T / (np.linalg.norm(class_means_np.T, axis=0) + EPSILON)).T
 
-        return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]
+                dists = cdist(class_means_np, vectors, "sqeuclidean")  # [nb_classes, N]
+                scores = dists.T  # [N, nb_classes], choose the one with the smallest distance
+                scores_list.append(scores)
+
+            scores_list = np.stack(scores_list, axis=1)  # [N, num_class_centroids, nb_classes]
+            average_scores = np.mean(scores_list, axis=1)  # [N, nb_classes]
+            return np.argsort(average_scores, axis=1)[:, : self.topk], y_true  # [N, topk]
+
+        else:
+            class_means_np = torch.cat([class_means[i].view(1, -1) for i in range(self._total_classes)], dim=0)
+            class_means_np = tensor2numpy(class_means_np)
+            class_means_np = (class_means_np.T / (np.linalg.norm(class_means_np.T, axis=0) + EPSILON)).T
+            
+            dists = cdist(class_means_np, vectors, "sqeuclidean")  # [nb_classes, N]
+            scores = dists.T  # [N, nb_classes], choose the one with the smallest distance
+            return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]
 
     def _extract_vectors(self, loader):
         self._network.eval()

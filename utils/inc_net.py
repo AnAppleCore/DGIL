@@ -183,14 +183,6 @@ def get_backbone(args, pretrained=False):
                 prompt_key_init=args["prompt_key_init"],
                 head_type=args["head_type"],
                 use_prompt_mask=args["use_prompt_mask"],
-                use_g_prompt=args["use_g_prompt"],
-                g_prompt_length=args["g_prompt_length"],
-                g_prompt_layer_idx=args["g_prompt_layer_idx"],
-                use_prefix_tune_for_g_prompt=args["use_prefix_tune_for_g_prompt"],
-                use_e_prompt=args["use_e_prompt"],
-                e_prompt_layer_idx=args["e_prompt_layer_idx"],
-                use_prefix_tune_for_e_prompt=args["use_prefix_tune_for_e_prompt"],
-                same_key_value=args["same_key_value"],
                 num_domains=args["num_domains"],
             )
             return model
@@ -806,7 +798,6 @@ class SPromptVitNet(nn.Module):
 
         return self
 
-
 # coda_prompt
 class CodaPromptVitNet(nn.Module):
     def __init__(self, args, pretrained):
@@ -834,7 +825,6 @@ class CodaPromptVitNet(nn.Module):
             return out, prompt_loss
         else:
             return out
-
 
 class MultiBranchCosineIncrementalNet(BaseNet):
     def __init__(self, args, pretrained):
@@ -910,7 +900,6 @@ class MultiBranchCosineIncrementalNet(BaseNet):
     
         self._feature_dim = self.backbones[0].out_dim * len(self.backbones) 
         self.fc=self.generate_fc(self._feature_dim,self.args['init_cls'])
-
 
 class FOSTERNet(nn.Module):
     def __init__(self, args, pretrained):
@@ -1164,7 +1153,6 @@ class AdaptiveNet(nn.Module):
         self.fc.load_state_dict(model_infos['fc'])
         test_acc = model_infos['test_acc']
         return test_acc
-
 
 class EaseNet(BaseNet):
     def __init__(self, args, pretrained=True):
