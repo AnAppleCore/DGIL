@@ -75,7 +75,38 @@ class MultiCentroidDist:
         assert len(self.cluster_means) == self.n_clusters
 
     def get_means_vector(self):
-        return torch.stack(self.cluster_means, dim=0).mean(dim=0).to(self.device)
+        return torch.stack(self.cluster_means, dim=0).to(self.device)
+
+    def update(self, features:torch.Tensor):
+        """Compute cluster means and variances using KMeans."""
+        if torch.isnan(features).any() or torch.isinf(features).any():
+            raise ValueError("Features contain NaN or inf values.")
+
+        features_np = features.cpu().numpy()
+        kmeans = KMeans(n_clusters=self.n_clusters).fit(features_np)
+        cluster_means = []
+        cluster_vars = []
+        km_labels = kmeans.labels_
+
+        for i in range(self.n_clusters):
+            cluster_mask = (km_labels == i)
+            if cluster_mask.sum() == 0:
+                # If no samples are assigned to this cluster, use the global mean and variance
+                cluster_mean = np.mean(features_np, axis=0)
+                cluster_var = np.var(features_np, axis=0)
+            else:
+                cluster_mean = np.mean(features_np[cluster_mask], axis=0)
+                cluster_var = np.var(features_np[cluster_mask], axis=0)
+
+            cluster_means.append(torch.tensor(cluster_mean).to(self.device))
+            cluster_vars.append(torch.tensor(cluster_var).to(self.device))
+
+        self.cluster_means.extend(cluster_means)
+        self.cluster_vars.extend(cluster_vars)
+
+        self.n_clusters += len(cluster_means)
+
+        assert len(self.cluster_means) == self.n_clusters
 
     def closest_id(self, features):
         closest_indices = []

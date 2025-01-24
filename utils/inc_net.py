@@ -694,16 +694,6 @@ class DoTPromptVitNet(nn.Module):
             else:
                 raise ValueError("No original backbone is provided.")
         return cls_features
-    
-    def positive_transform_forward(self, u, domain_ids=[0], return_logits=False):
-        return self.backbone.positive_transform_head(
-            u, domain_ids=domain_ids, return_logits=return_logits
-        )
-    
-    def negative_transform_forward(self, i, domain_id=0):
-        return self.backbone.negative_transform_head(
-            i, domain_id=domain_id
-        )
 
 # sprompt
 class SPromptVitNet(nn.Module):

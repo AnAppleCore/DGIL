@@ -1,14 +1,17 @@
 import logging
-from typing import Union
+from typing import List, Union
 
+import kornia.augmentation as K
 import numpy as np
 import torch
-from models.base import EPSILON, BaseLearner
+from kornia.augmentation.auto import RandAugment, TrivialAugment
 from scipy.spatial.distance import cdist
 from torch import nn, optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from models.base import EPSILON, BaseLearner
 from utils.data_manager import DataManager
 from utils.distributions import (CovarianceDist, MultiCentroidDist,
                                  MultiPrototypeDist)
@@ -70,6 +73,10 @@ class Learner(BaseLearner):
         self.class_distributions = {}
         self.raw_class_distributions = {}
 
+        # augmentation used for single-source DG
+        self.rand_aug = K.AugmentationSequential(RandAugment(n=2, m=10))
+        self.trivial_aug = K.AugmentationSequential(TrivialAugment())
+
     def after_task(self):
         self._known_classes = self._total_classes
 
@@ -130,20 +137,20 @@ class Learner(BaseLearner):
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
                 logits[:, :self._known_classes] = float('-inf')
+                features = output["pre_logits"]
 
                 loss = F.cross_entropy(logits, targets.long())
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
                     loss = loss - self.args["pull_constraint_coeff"] * output['reduce_sim']
 
                 if self.use_cls_con_loss:
-                    features = output["pre_logits"]
                     loss += self.cls_con_weight * self.orth_loss(features, targets)
 
                 if self.use_dom_con_loss:
-                    shuffled_output = self._network(inputs, task_id=self._cur_task, train=True, shuffle_tokens=True)
-                    shuffled_features = shuffled_output["pre_logits"]
-                    domain_ids = torch.zeros(len(inputs), dtype=torch.long, device=self._device) + self._cur_domain
-                    loss += self.dom_con_weight * self.div_loss(shuffled_features, domain_ids)
+                    inputs_aug = self.trivial_aug(inputs)
+                    # inputs_aug = self.rand_aug(inputs)
+                    features_aug = self._network(inputs_aug, task_id=self._cur_task, train=True)["pre_logits"]
+                    loss += self.dom_con_weight * self.div_loss(features, features_aug, targets)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -184,33 +191,6 @@ class Learner(BaseLearner):
         logging.info("Computing distributions...")
         self._network.backbone.eval()
         self._network.original_backbone.eval()
-        # for domain distribution
-        if self.use_dom_con_loss:
-            features, labels = [], []
-            for i, (_, inputs, targets) in enumerate(data_loader):
-                inputs, targets = inputs.to(self._device), targets.to(self._device)
-                mask = (targets >= self._known_classes).nonzero().view(-1)
-                inputs = torch.index_select(inputs, 0, mask)
-                targets = torch.index_select(targets, 0, mask)
-                with torch.no_grad():
-                    feature = self._network(inputs, task_id=self._cur_task, train=True, shuffle_tokens=True)["pre_logits"]
-                features.append(feature)
-                labels.append(targets)
-            features = torch.cat(features, dim=0)
-            labels = torch.cat(labels, dim=0)
-
-            mean = features.mean(dim=0)
-            cov = torch.mm(features.t(), features) / len(features)
-            if self._cur_domain in self.domain_distributions:
-                # update the existing domain distribution
-                existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
-                existing_distribution.update(mean, cov, len(features))
-                self.domain_distributions[self._cur_domain] = existing_distribution
-            else:
-                new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
-                new_distribution.update(mean, cov, len(features))
-                self.domain_distributions[self._cur_domain] = new_distribution
-            logging.info(f"Distributions computed for domain {self._cur_domain}")
 
         # for class distribution
         features = []
@@ -247,13 +227,29 @@ class Learner(BaseLearner):
                 if self.use_multicentroid_nme:
                     self._class_means[cls_label_id] = new_distribution.cluster_means
                 else:
-                    self._class_means[cls_label_id] = cls_feature.mean(dim=0) # new_distribution.get_means_vector()
+                    self._class_means[cls_label_id] = cls_feature.mean(dim=0)
                 
                 new_raw_distribution = MultiPrototypeDist(n_prototypes=self.num_class_centroids, feature_dim=cls_raw_feature.shape[-1], device=self._device)
                 closest_indices = new_distribution.closest_id(cls_feature)
                 new_raw_distribution.update(closest_indices, cls_raw_feature)
                 self.raw_class_distributions[cls_label_id] = new_raw_distribution
         logging.info(f"Distributions computed for {unique_labels.shape[0]} classes: {unique_labels.tolist()} ")
+
+        # for domain distribution
+        if self.use_dom_con_loss:
+            pass
+            # mean = features.mean(dim=0)
+            # cov = torch.mm(features.t(), features) / len(features)
+            # if self._cur_domain in self.domain_distributions:
+            #     # update the existing domain distribution
+            #     existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
+            #     existing_distribution.update(mean, cov, len(features))
+            #     self.domain_distributions[self._cur_domain] = existing_distribution
+            # else:
+            #     new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
+            #     new_distribution.update(mean, cov, len(features))
+            #     self.domain_distributions[self._cur_domain] = new_distribution
+            # logging.info(f"Distributions computed for domain {self._cur_domain}")
 
     def _train_dot_and_doh(self, train_loader, test_loader):
         self._network.to(self._device)
@@ -470,78 +466,48 @@ class Learner(BaseLearner):
         """
         if self.class_distributions:
             sample_mean = []
-            sample_targets = []
             batch_size = features.shape[0]
-            sample_per_class = batch_size // self._known_classes + 1
             for class_id, class_dist in self.class_distributions.items():
                 if isinstance(class_dist, MultiCentroidDist):
-                    sample_mean.append(class_dist.generate(sample_per_class))
-                    sample_targets.append(torch.ones(sample_per_class, dtype=torch.long) * class_id)
+                    sample_mean.append(class_dist.get_means_vector())
             sample_mean = torch.cat(sample_mean, dim=0).to(self._device, non_blocking=True)
-            sample_targets = torch.cat(sample_targets, dim=0).to(self._device, non_blocking=True)
             if sample_mean.shape[0] > batch_size:
                 shuffle_idx = torch.randperm(sample_mean.shape[0])[:batch_size]
                 sample_mean = sample_mean[shuffle_idx]
-                sample_targets = sample_targets[shuffle_idx]
 
             M = torch.cat([sample_mean, features], dim=0).to(self._device, non_blocking=True)
-            T = torch.cat([sample_targets, targets], dim=0).to(self._device, non_blocking=True)
             M = F.normalize(M, dim=1)
             sim = torch.matmul(M, M.t()) / self.contrastive_temp
-            mask = (T.unsqueeze(0) == T.unsqueeze(1)).float()
 
         else:
             features = F.normalize(features, dim=1)
             sim = torch.matmul(features, features.t()) / self.contrastive_temp
-            mask = (targets.unsqueeze(0) == targets.unsqueeze(1)).float()
 
-        mask.fill_diagonal_(0)
-        positive_sim = sim[mask == 1]
-        if positive_sim.numel() > 0:
-            max_positive = positive_sim.max()
-            positive_loss = -((positive_sim - max_positive).exp().sum().log() + max_positive - torch.log(mask.sum() + EPSILON))
-        else:
-            positive_loss = torch.tensor(0.0, device=features.device)
-
-        negative_sim = sim[mask == 0]
-        if negative_sim.numel() > 0:
-            max_negative = negative_sim.max()
-            negative_loss = ((negative_sim - max_negative).exp().sum().log() + max_negative - torch.log((mask.shape[0] * (mask.shape[0] - 1) - mask.sum()) + EPSILON))
-        else:
-            negative_loss = torch.tensor(0.0, device=features.device)
-
-        loss = positive_loss + negative_loss
-
+        loss = F.cross_entropy(sim, torch.arange(sim.shape[0], device=self._device).long())
         # logging.info(f"orth_loss: {loss}")
         return loss
 
-    def div_loss(self, features: torch.Tensor, domain_ids: torch.Tensor):
+    def div_loss(self, features: torch.Tensor, features_aug: torch.Tensor, targets: torch.Tensor):
+        """
+        moment matching loss for the domain features
 
-        loss = 0.0
-        if self.domain_distributions:
-            sample_means = []
-            batch_size = features.shape[0]
-            sample_per_domain = batch_size // len(self.domain_distributions) + 1
+        Args:
+            features (torch.Tensor): Feature embeddings of shape (batch_size, embedding_dim).
+            features_aug (torch.Tensor): Augmented feature embeddings of shape (batch_size, embedding_dim).
+            targets (torch.Tensor): Class labels of shape (batch_size,).
 
-            for domain_id, domain_dist in self.domain_distributions.items():
-                if isinstance(domain_dist, CovarianceDist):
-                    # sample_means.append(domain_dist.generate(sample_per_domain))
-                    sample_means.append(domain_dist.mean.unsqueeze(0))
-            sample_means = torch.cat(sample_means, dim=0).to(self._device, non_blocking=True)
-            if sample_means.shape[0] > batch_size:
-                shuffle_idx = torch.randperm(sample_means.shape[0])[:batch_size]
-                sample_means = sample_means[shuffle_idx]
+        Returns:
+            torch.Tensor: The computed moment matching loss.
+        """
 
-            features = F.normalize(features, p=2, dim=1, eps=EPSILON) # batch_size, embedding_dim
-            sample_means = F.normalize(sample_means, p=2, dim=1, eps=EPSILON) # batch_size, embedding_dim
+        features = F.normalize(features, dim=1, p=2, eps=EPSILON)
+        features_aug = F.normalize(features_aug, dim=1, p=2, eps=EPSILON)
 
-            if torch.isnan(features).any() or torch.isinf(features).any():
-                raise ValueError("Features contain NaN or inf values.")
-            if torch.isnan(sample_means).any() or torch.isinf(sample_means).any():
-                raise ValueError("Sample means contain NaN or inf values.")
+        sim_1 = torch.matmul(features, features_aug.detach().t()) / 0.1
+        sim_2 = torch.matmul(features_aug, features.detach().t()) / 0.1
 
-            consine_sim = torch.mm(features, sample_means.t())
-            loss = - torch.mean(consine_sim)
+        loss = (F.cross_entropy(sim_1, torch.arange(sim_1.shape[0], device=self._device).long()) + \
+                F.cross_entropy(sim_2, torch.arange(sim_2.shape[0], device=self._device).long())) / 2
 
         # logging.info(f"div_loss: {loss}")
         return loss
