@@ -1,10 +1,16 @@
 import copy
 import logging
-import torch
-from torch import nn
-from backbone.linears import SimpleLinear, SplitCosineLinear, CosineLinear, EaseCosineLinear, SimpleContinualLinear
-from backbone.prompt import CodaPrompt
+
 import timm
+import torch
+from timm.models.layers import Mlp
+from torch import nn
+
+from backbone.linears import (CosineLinear, EaseCosineLinear,
+                              SimpleContinualLinear, SimpleLinear,
+                              SplitCosineLinear)
+from backbone.prompt import CodaPrompt
+
 
 def get_backbone(args, pretrained=False):
     name = args["backbone_type"].lower()
@@ -649,7 +655,7 @@ class PromptVitNet(nn.Module):
 
 # dot
 class DoTPromptVitNet(nn.Module):
-    def __init__(self, args, pretrained):
+    def __init__(self, args:dict, pretrained):
         super(DoTPromptVitNet, self).__init__()
         self.backbone = get_backbone(args, pretrained)
         if args["get_original_backbone"]:
@@ -680,6 +686,7 @@ class DoTPromptVitNet(nn.Module):
                 cls_features = None
 
         x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
+        x['raw_features'] = cls_features
         return x
     
     def extract_vector(self, x, task_id=-1, train=False, shuffle_tokens=False):
@@ -691,14 +698,6 @@ class DoTPromptVitNet(nn.Module):
 
         x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
         return x['pre_logits']
-    
-    def forward_uninstructed_features(self, x):
-        with torch.no_grad():
-            if self.original_backbone is not None:
-                cls_features = self.original_backbone(x)['pre_logits']
-            else:
-                raise ValueError("No original backbone is provided.")
-        return cls_features
 
 # sprompt
 class SPromptVitNet(nn.Module):

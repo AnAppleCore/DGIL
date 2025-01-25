@@ -39,10 +39,14 @@ class Learner(BaseLearner):
         self.use_cls_con_loss = args.get("use_cls_con_loss", False)
         self.use_dom_con_loss = args.get("use_dom_con_loss", False)
         self.contrastive_temp = args.get("contrastive_temp", 0.8)
-        self.cls_con_weight = args.get("cls_con_weight", 0.01)
-        self.dom_con_weight = args.get("dom_con_weight", 0.01)
+        self.cls_con_weight = args.get("cls_con_weight", 1.00)
+        self.dom_con_weight = args.get("dom_con_weight", 1.00)
         self.num_class_centroids = args.get("num_class_centroids", 10)
         self.use_multicentroid_nme = args.get("use_multicentroid_nme", False)
+
+        #TODO parameter tuning
+        # self.ca_epochs = args.get("ca_epochs", 0)
+        # self.ca_lr = args.get("ca_lr", 0.001)
 
         # Freeze the parameters for ViT.
         if self.args["freeze"]:
@@ -54,14 +58,14 @@ class Learner(BaseLearner):
                 if n.startswith(tuple(self.args["freeze"])):
                     p.requires_grad = False
         
-        total_params = sum(p.numel() for p in self._network.backbone.parameters())
+        total_params = sum(p.numel() for p in self._network.parameters())
         logging.info(f'{total_params:,} model total parameters.')
-        total_trainable_params = sum(p.numel() for p in self._network.backbone.parameters() if p.requires_grad)
+        total_trainable_params = sum(p.numel() for p in self._network.parameters() if p.requires_grad)
         logging.info(f'{total_trainable_params:,} model training parameters.')
 
         # if some parameters are trainable, print the key name and corresponding parameter number
         if total_params != total_trainable_params:
-            for name, param in self._network.backbone.named_parameters():
+            for name, param in self._network.named_parameters():
                 if param.requires_grad:
                     logging.info("{}: {}".format(name, param.numel()))
 
@@ -105,7 +109,8 @@ class Learner(BaseLearner):
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader)
         self._compute_distributions(self.train_loader)
-        # self._train_dot_and_doh(self.train_loader, self.test_loader)
+        # if self.ca_epochs > 0 and self._cur_task > 0:
+        #     self._train_classifier(self.test_loader)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -210,8 +215,9 @@ class Learner(BaseLearner):
             inputs = torch.index_select(inputs, 0, mask)
             targets = torch.index_select(targets, 0, mask)
             with torch.no_grad():
-                feature = self._network(inputs, task_id=self._cur_task, train=True)["pre_logits"]
-                raw_feature = self._network.forward_uninstructed_features(inputs)
+                output = self._network(inputs, task_id=self._cur_task, train=True)
+                feature = output["pre_logits"]
+                raw_feature = output["raw_features"]
             features.append(feature)
             raw_features.append(raw_feature)
             labels.append(targets)
@@ -236,6 +242,16 @@ class Learner(BaseLearner):
                     self._class_means[cls_label_id] = new_distribution.cluster_means
                 else:
                     self._class_means[cls_label_id] = cls_feature.mean(dim=0)
+
+                # mean = cls_feature.mean(dim=0)
+                # cov = torch.cov(cls_feature.t())
+                # new_distribution = CovarianceDist(feature_dim=cls_feature.shape[-1], device=self._device)
+                # new_distribution.init_from(mean, cov, len(cls_feature))
+                # self.class_distributions[cls_label_id] = new_distribution
+                # if self.use_multicentroid_nme:
+                #     raise NotImplementedError("Multicentroid NME not implemented for CovarianceDist")
+                # else:
+                #     self._class_means[cls_label_id] = mean
                 
                 new_raw_distribution = MultiPrototypeDist(n_prototypes=self.num_class_centroids, feature_dim=cls_raw_feature.shape[-1], device=self._device)
                 closest_indices = new_distribution.closest_id(cls_feature)
@@ -245,41 +261,106 @@ class Learner(BaseLearner):
 
         # for domain distribution
         if self.use_dom_con_loss:
-            pass
-            # mean = features.mean(dim=0)
-            # cov = torch.mm(features.t(), features) / len(features)
-            # if self._cur_domain in self.domain_distributions:
-            #     # update the existing domain distribution
-            #     existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
-            #     existing_distribution.update(mean, cov, len(features))
-            #     self.domain_distributions[self._cur_domain] = existing_distribution
-            # else:
-            #     new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
-            #     new_distribution.update(mean, cov, len(features))
-            #     self.domain_distributions[self._cur_domain] = new_distribution
-            # logging.info(f"Distributions computed for domain {self._cur_domain}")
+            mean = features.mean(dim=0)
+            cov = torch.cov(features.t())
+            if self._cur_domain in self.domain_distributions:
+                # update the existing domain distribution
+                existing_distribution: CovarianceDist = self.domain_distributions[self._cur_domain]
+                existing_distribution.update(mean, cov, len(features))
+                self.domain_distributions[self._cur_domain] = existing_distribution
+            else:
+                new_distribution = CovarianceDist(feature_dim=features.shape[-1], device=self._device)
+                new_distribution.init_from(mean, cov, len(features))
+                self.domain_distributions[self._cur_domain] = new_distribution
+            logging.info(f"Distributions computed for domain {self._cur_domain}")
 
-    def _train_dot_and_doh(self, train_loader, test_loader):
+    def _train_classifier(self, test_loader):
+        # activate all head parameters
+        if len(self._multiple_gpus) > 1:
+            self._network = self._network.module
+        for p in self._network.backbone.head.parameters():
+            p.requires_grad = True
+        param_list = [p for p in self._network.backbone.head.parameters() if p.requires_grad]
+        param_groups = [{'params': param_list, 'lr': self.ca_lr, 'weight_decay': self.weight_decay}]
+        optimizer = optim.SGD(param_groups, lr=self.ca_lr, momentum=0.9, weight_decay=self.weight_decay)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.ca_epochs, eta_min=self.min_lr)
+
+        if len(self._multiple_gpus) > 1:
+            self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._network.to(self._device)
+        self._network.train()
 
-        # freeze and record the parameters except the domain transformation mlp and domain-specific head
-        active_params_dict = {}
-        for name, param in self._network.named_parameters():
-            if param.requires_grad and 'domain' not in name:
-                active_params_dict[name] = param
-                param.requires_grad = False
-
-        optimizer = self.get_optimizer()
-        scheduler = self.get_scheduler(optimizer)
-
-        prog_bar = tqdm(range(self.args['tuned_epoch']), desc="DoT & DoH")
+        prog_bar = tqdm(range(self.ca_epochs), desc="CA training")
         for _, epoch in enumerate(prog_bar):
-            self._network.backbone.train()
-            self._network.original_backbone.eval()
-
             losses = 0.0
+            sampled_data = []
+            sampled_label = []
+            num_sampled_pcls = self.batch_size * 5
+
+            for c_id in range(self._total_classes):
+                sampled_data.append(
+                    self.class_distributions[c_id].generate(num_sampled_pcls)
+                )
+                sampled_label.append(
+                    torch.ones(num_sampled_pcls, device=self._device).long() * c_id
+                )
+            
+            sampled_data = torch.cat(sampled_data, dim=0).float().to(self._device)
+            sampled_label = torch.cat(sampled_label, dim=0).long().to(self._device)
+
+            inputs = sampled_data
+            targets = sampled_label
+
+            sf_indexes = torch.randperm(inputs.size(0))
+            inputs = inputs[sf_indexes]
+            targets = targets[sf_indexes]
+
             correct, total = 0, 0
-        pass
+            for _iter in range(self._total_classes):
+                inp = inputs[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+                tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+
+                outputs = self._network(inp, task_id=self._cur_task, train=False, head_only=True)
+                logits = outputs['logits'][:, :self._total_classes]
+                loss = F.cross_entropy(logits, tgt)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                losses += loss.item()
+
+                _, preds = torch.max(logits, dim=1)
+                correct += preds.eq(tgt.expand_as(preds)).cpu().sum()
+                total += len(tgt)
+
+            scheduler.step()
+
+            train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+            if (epoch + 1) % 5 == 0 or epoch == self.ca_epochs - 1:
+                test_acc = self._compute_accuracy(self._network, test_loader)
+                info = "CA Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                    self._cur_task,
+                    epoch + 1,
+                    self.ca_epochs,
+                    losses / len(sampled_data),
+                    train_acc,
+                    test_acc,
+                )
+            else:
+                info = "CA Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
+                    self._cur_task,
+                    epoch + 1,
+                    self.ca_epochs,
+                    losses / len(sampled_data),
+                    train_acc,
+                )
+            prog_bar.set_description(info)
+
+        logging.info(info)
+
+
+        if len(self._multiple_gpus) > 1:
+            self._network = self._network.module
 
     def get_optimizer(self):
 
@@ -292,13 +373,13 @@ class Learner(BaseLearner):
         for name, param in self._network.named_parameters():
             if param.requires_grad and 'prompt' in name:
                 prompt_params.append(param)
-                logging.info(f"Prompt parameter: {name} with lr {prompt_lrate}")
+                # logging.info(f"Prompt parameter: {name} with lr {prompt_lrate}")
             elif param.requires_grad and 'head' in name:
                 output_head_params.append(param)
-                logging.info(f"Output head parameter: {name}")
+                # logging.info(f"Output head parameter: {name}")
             elif param.requires_grad:
                 other_params.append(param)
-                logging.info(f"Other parameter: {name}")
+                # logging.info(f"Other parameter: {name}")
 
         param_groups = [
             {'params': prompt_params, 'lr': prompt_lrate},
@@ -519,6 +600,30 @@ class Learner(BaseLearner):
 
         loss = (F.cross_entropy(sim_1, torch.arange(sim_1.shape[0], device=self._device).long()) + \
                 F.cross_entropy(sim_2, torch.arange(sim_2.shape[0], device=self._device).long())) / 2
+
+        # logging.info(f"div_ce_loss: {loss}")
+
+        if self._cur_task > 0:
+            sample_mean = []
+            batch_size = features.shape[0]
+            num_samples_per_domain = batch_size // len(self.domain_distributions) + 1
+            for domain_id, domain_dist in self.domain_distributions.items():
+                if isinstance(domain_dist, MultiCentroidDist):
+                    sample_mean.append(domain_dist.get_means_vector())
+                elif isinstance(domain_dist, CovarianceDist):
+                    sample_mean.append(domain_dist.generate(num_samples_per_domain))
+            sample_mean = torch.cat(sample_mean, dim=0).to(self._device, non_blocking=True)
+            if sample_mean.shape[0] > batch_size:
+                shuffle_idx = torch.randperm(sample_mean.shape[0])[:batch_size]
+                sample_mean = sample_mean[shuffle_idx]
+
+            sample_mean = F.normalize(sample_mean, dim=1, p=2, eps=EPSILON)
+
+            mse_loss = (torch.dist(features, sample_mean.detach(), p=2)+ \
+                        torch.dist(features_aug, sample_mean.detach(), p=2)) / 2
+
+            # logging.info(f"div_mse_loss: {mse_loss}")
+            loss += mse_loss * 0.1
 
         # logging.info(f"div_loss: {loss}")
         return loss
