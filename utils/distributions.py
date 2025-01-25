@@ -11,6 +11,16 @@ class CovarianceDist:
         self.num_samples = 0
         self.device = device
 
+    def init_from(self, mean, cov, num_samples):
+        """Set the initial mean and covariance."""
+        if torch.isnan(mean).any() or torch.isinf(mean).any():
+            raise ValueError("Initial mean contains NaN or inf values.")
+        if torch.isnan(cov).any() or torch.isinf(cov).any():
+            raise ValueError("Initial covariance contains NaN or inf values.")
+        self.mean = mean
+        self.cov = cov
+        self.num_samples = num_samples
+
     def update(self, new_mean, new_cov, new_samples):
         """Update the mean, covariance, and sample count using the new data."""
         if torch.isnan(new_mean).any() or torch.isinf(new_mean).any():

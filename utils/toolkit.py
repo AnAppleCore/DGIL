@@ -1,6 +1,17 @@
+import logging
 import os
 import numpy as np
 import torch
+
+
+class StderrToLoggerHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+
+    def emit(self, record):
+        # 将错误信息记录到 logger
+        self.format(record)
+        logging.getLogger().handle(record)
 
 
 def count_parameters(model, trainable=False):

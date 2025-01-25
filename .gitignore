@@ -164,3 +164,4 @@ logs/
 .vscode/
 data/
 *.pdf
+*.csv

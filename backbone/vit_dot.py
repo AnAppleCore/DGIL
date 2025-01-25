@@ -550,18 +550,20 @@ class VisionTransformer(nn.Module):
 
     def forward_head(self, res, pre_logits: bool = False):
         x = res['x']
-        if self.class_token and self.head_type == 'token':
-            x = x[:, 0]
-        elif self.head_type == 'gap' and self.global_pool == 'avg':
-            x = x.mean(dim=1)
-        elif self.head_type == 'prompt' and self.prompt_pool:
-            x = x[:, 1:(1 + self.total_prompt_len)] if self.class_token else x[:, 0:self.total_prompt_len]
-            x = x.mean(dim=1)
-        elif self.head_type == 'token+prompt' and self.prompt_pool and self.class_token:
-            x = x[:, 0:self.total_prompt_len + 1]
-            x = x.mean(dim=1)
-        else:
-            raise ValueError(f'Invalid classifier={self.classifier}')
+
+        if not pre_logits:
+            if self.class_token and self.head_type == 'token':
+                x = x[:, 0]
+            elif self.head_type == 'gap' and self.global_pool == 'avg':
+                x = x.mean(dim=1)
+            elif self.head_type == 'prompt' and self.prompt_pool:
+                x = x[:, 1:(1 + self.total_prompt_len)] if self.class_token else x[:, 0:self.total_prompt_len]
+                x = x.mean(dim=1)
+            elif self.head_type == 'token+prompt' and self.prompt_pool and self.class_token:
+                x = x[:, 0:self.total_prompt_len + 1]
+                x = x.mean(dim=1)
+            else:
+                raise ValueError(f'Invalid classifier={self.classifier}')
         
         res['pre_logits'] = x
 
@@ -575,30 +577,6 @@ class VisionTransformer(nn.Module):
         res = self.forward_features(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
         res = self.forward_head(res)
         return res
-    
-    def positive_transform_head(self, uninstructed_features=None, domain_ids=[0], return_logits=False):
-        positive_feature_dict = {}
-        domain_logit_dict = {}
-        for domain_id in domain_ids:
-            domain_positive_transformation = self.domain_positive_transformations[domain_id]
-            positive_features = domain_positive_transformation(uninstructed_features)
-            positive_feature_dict[domain_id] = positive_features
-
-            if return_logits:
-                positive_features = self.fc_norm(positive_features)
-                domain_head = self.domain_head_pool[domain_id]
-                domain_logits = domain_head(positive_features)
-                domain_logit_dict[domain_id] = domain_logits
-
-        if return_logits:
-            return positive_feature_dict, domain_logit_dict
-        else:
-            return positive_feature_dict
-        
-    def negative_transform_head(self, instructed_features=None, domain_id=0):
-        domain_negative_transformation = self.domain_negative_transformations[domain_id]
-        negative_features = domain_negative_transformation(instructed_features)
-        return negative_features
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ''):

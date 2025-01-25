@@ -667,7 +667,12 @@ class DoTPromptVitNet(nn.Module):
             drop_block_rate=None,
         ).eval()
 
-    def forward(self, x, task_id=-1, train=False, shuffle_tokens=False):
+    def forward(self, x, task_id=-1, train=False, shuffle_tokens=False, head_only=False):
+
+        if head_only:
+            x = self.backbone.forward_head(res={'x':x}, pre_logits=True)
+            return x
+
         with torch.no_grad():
             if self.original_backbone is not None:
                 cls_features = self.original_backbone(x)['pre_logits']

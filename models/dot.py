@@ -42,7 +42,6 @@ class Learner(BaseLearner):
         self.cls_con_weight = args.get("cls_con_weight", 0.01)
         self.dom_con_weight = args.get("dom_con_weight", 0.01)
         self.num_class_centroids = args.get("num_class_centroids", 10)
-
         self.use_multicentroid_nme = args.get("use_multicentroid_nme", False)
 
         # Freeze the parameters for ViT.
@@ -85,11 +84,12 @@ class Learner(BaseLearner):
         The basic incremental learning training process.
         """
         self._cur_task += 1
+        task_size = data_manager.get_task_size(self._cur_task)
         try:
             self._cur_domain = data_manager.get_cur_domain(self._cur_task)
         except:
             self._cur_domain = 0
-        self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
+        self._total_classes = self._known_classes + task_size
         logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
 
         self.data_manager = data_manager
@@ -126,8 +126,12 @@ class Learner(BaseLearner):
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.args['tuned_epoch']))
         for _, epoch in enumerate(prog_bar):
-            self._network.backbone.train()
-            self._network.original_backbone.eval()
+            if len(self._multiple_gpus) > 1:
+                self._network.module.backbone.train()
+                self._network.module.original_backbone.eval()
+            else:
+                self._network.backbone.train()
+                self._network.original_backbone.eval()
 
             losses = 0.0
             correct, total = 0, 0
@@ -189,8 +193,12 @@ class Learner(BaseLearner):
 
     def _compute_distributions(self, data_loader):
         logging.info("Computing distributions...")
-        self._network.backbone.eval()
-        self._network.original_backbone.eval()
+        if len(self._multiple_gpus) > 1:
+            self._network.module.backbone.eval()
+            self._network.module.original_backbone.eval()
+        else:
+            self._network.backbone.eval()
+            self._network.original_backbone.eval()
 
         # for class distribution
         features = []
@@ -467,9 +475,12 @@ class Learner(BaseLearner):
         if self.class_distributions:
             sample_mean = []
             batch_size = features.shape[0]
+            num_samples_per_class = batch_size // self._total_classes + 1
             for class_id, class_dist in self.class_distributions.items():
                 if isinstance(class_dist, MultiCentroidDist):
                     sample_mean.append(class_dist.get_means_vector())
+                elif isinstance(class_dist, CovarianceDist):
+                    sample_mean.append(class_dist.generate(num_samples_per_class))
             sample_mean = torch.cat(sample_mean, dim=0).to(self._device, non_blocking=True)
             if sample_mean.shape[0] > batch_size:
                 shuffle_idx = torch.randperm(sample_mean.shape[0])[:batch_size]

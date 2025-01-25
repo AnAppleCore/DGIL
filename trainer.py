@@ -6,7 +6,7 @@ from utils import factory
 from utils.data import use_multi_domain_dataset
 from utils.data_manager import DataManager
 from utils.domain_data_manager import DomainDataManager
-from utils.toolkit import count_parameters
+from utils.toolkit import count_parameters, StderrToLoggerHandler
 import os
 import numpy as np
 
@@ -46,6 +46,8 @@ def _train(args:dict):
             logging.StreamHandler(sys.stdout),
         ],
     )
+
+    # sys.stderr = StderrToLoggerHandler()
 
     # switch the output log file
     for handler in logging.root.handlers[:]:
