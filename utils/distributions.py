@@ -54,6 +54,7 @@ class MultiCentroidDist:
         self.device = device
         self.cluster_means = None
         self.cluster_vars = None
+        self.cluster_masks = None
     
     def compute_centroids(self, features:torch.Tensor):
         """Compute cluster means and variances using KMeans."""
@@ -64,6 +65,7 @@ class MultiCentroidDist:
         kmeans = KMeans(n_clusters=self.n_clusters).fit(features_np)
         cluster_means = []
         cluster_vars = []
+        cluster_masks = []
         km_labels = kmeans.labels_
 
         for i in range(self.n_clusters):
@@ -78,9 +80,11 @@ class MultiCentroidDist:
 
             cluster_means.append(torch.tensor(cluster_mean).to(self.device))
             cluster_vars.append(torch.tensor(cluster_var).to(self.device))
+            cluster_masks.append(cluster_mask)
 
         self.cluster_means = cluster_means
         self.cluster_vars = cluster_vars
+        self.cluster_masks = cluster_masks
 
         assert len(self.cluster_means) == self.n_clusters
 
@@ -96,6 +100,7 @@ class MultiCentroidDist:
         kmeans = KMeans(n_clusters=self.n_clusters).fit(features_np)
         cluster_means = []
         cluster_vars = []
+        cluster_masks = []
         km_labels = kmeans.labels_
 
         for i in range(self.n_clusters):
@@ -110,9 +115,11 @@ class MultiCentroidDist:
 
             cluster_means.append(torch.tensor(cluster_mean).to(self.device))
             cluster_vars.append(torch.tensor(cluster_var).to(self.device))
+            cluster_masks.append(cluster_mask)
 
         self.cluster_means.extend(cluster_means)
         self.cluster_vars.extend(cluster_vars)
+        self.cluster_masks.extend(cluster_masks)
 
         self.n_clusters += len(cluster_means)
 
@@ -183,20 +190,21 @@ class MultiPrototypeDist:
         self.feature_dim = feature_dim
         self.device = device
         self.prototype_feats = None
-        self.prototype_var = None
+        self.prototype_vars = None
 
-    def update(self, new_prototype_ids, features):
+    def init_from(self, prototype_ids, cluster_masks, features):
         """Update prototype features and variances."""
         if torch.isnan(features).any() or torch.isinf(features).any():
             raise ValueError("Features contain NaN or inf values.")
         prototype_feats = []
-        new_prototype_feats = features[new_prototype_ids]
+        prototype_vars = []
         for i in range(self.n_prototypes):
-            prototype_feats.append(new_prototype_feats[i])
+            prototype_feats.append(features[prototype_ids[i]])
+            prototype_vars.append(np.var(features[cluster_masks[i]].cpu().numpy(), axis=0))
         self.prototype_feats = prototype_feats
-        self.prototype_var = np.var(features.cpu().numpy(), axis=0)
+        self.prototype_vars = prototype_vars
 
-    def generate(self, num_samples_to_generate):
+    def generate(self, num_samples_to_generate, shuffle_idx=None, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.prototype_feats is None:
             raise ValueError("Cannot generate samples because the prototypes are not computed.")
@@ -204,23 +212,25 @@ class MultiPrototypeDist:
             feature_vectors = []
             for i in range(self.n_prototypes):
                 # Regularize the covariance matrix
-                cov_reg = torch.diag(torch.tensor(self.prototype_var, device=self.device)) + 1e-4 * torch.eye(self.feature_dim, device=self.device)
+                cov_reg = torch.diag(torch.tensor(self.prototype_vars[i], device=self.device)) + 1e-4 * torch.eye(self.feature_dim, device=self.device)
 
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for prototype {i} contains NaN or inf values.")
 
                 # Generate samples
-                mvn = dist.MultivariateNormal(self.prototype_feats[i], covariance_matrix=cov_reg)
+                prototype_feat = self.prototype_feats[i] * (0.9 + decay)
+                mvn = dist.MultivariateNormal(prototype_feat, covariance_matrix=cov_reg)
                 feature_vector = mvn.sample((num_samples_to_generate,))
                 feature_vectors.append(feature_vector)
             feature_vectors = torch.cat(feature_vectors, dim=0).to(self.device)
-            shuffle_idx = torch.randperm(feature_vectors.shape[0])
+            if shuffle_idx is None:
+                shuffle_idx = torch.randperm(feature_vectors.shape[0])
             feature_vectors = feature_vectors[shuffle_idx[:num_samples_to_generate]]
         
-        return feature_vectors
+        return feature_vectors, shuffle_idx
 
-    def generate_per_prototype(self, num_samples_per_prototype):
+    def generate_per_prototype(self, num_samples_per_prototype, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.prototype_feats is None:
             raise ValueError("Cannot generate samples because the prototypes are not computed.")
@@ -228,14 +238,15 @@ class MultiPrototypeDist:
             feature_vectors = []
             for i in range(self.n_prototypes):
                 # Regularize the covariance matrix
-                cov_reg = torch.diag(torch.tensor(self.prototype_var, device=self.device)) + 1e-4 * torch.eye(self.feature_dim, device=self.device)
+                cov_reg = torch.diag(torch.tensor(self.prototype_vars[i], device=self.device)) + 1e-4 * torch.eye(self.feature_dim, device=self.device)
 
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for prototype {i} contains NaN or inf values.")
 
                 # Generate samples
-                mvn = dist.MultivariateNormal(self.prototype_feats[i], covariance_matrix=cov_reg)
+                prototype_feat = self.prototype_feats[i] * (0.9 + decay)
+                mvn = dist.MultivariateNormal(prototype_feat, covariance_matrix=cov_reg)
                 feature_vector = mvn.sample((num_samples_per_prototype,))
                 feature_vectors.append(feature_vector)
             feature_vectors = torch.cat(feature_vectors, dim=0).to(self.device)

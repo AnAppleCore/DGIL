@@ -189,7 +189,6 @@ def get_backbone(args, pretrained=False):
                 prompt_key_init=args["prompt_key_init"],
                 head_type=args["head_type"],
                 use_prompt_mask=args["use_prompt_mask"],
-                num_domains=args["num_domains"],
             )
             return model
         else:
@@ -662,7 +661,45 @@ class DoTPromptVitNet(nn.Module):
             self.original_backbone = self.get_original_backbone(args)
         else:
             self.original_backbone = None
-            
+
+        self.num_classes = args["nb_classes"]
+        self.num_domains = args.get("num_domains", 0)
+        self.embed_dim = self.backbone.embed_dim
+        self.act_layer = nn.GELU
+        self.drop_rate = args.get("drop_rate", 0.0)
+        if args.get("dot_epochs", 0) > 0:
+            self.ui_domain_transform = nn.ModuleList([
+                Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
+                for _ in range(self.num_domains)
+            ])
+            self.iu_domain_transform = nn.ModuleList([
+                Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
+                for _ in range(self.num_domains)
+            ])
+        self.rec_head = None
+
+    def update_head(self, task_size, freeze_old=True):
+        if self.rec_head is None:
+            self.rec_head = SimpleContinualLinear(self.embed_dim, task_size)
+        else:
+            self.rec_head.update(task_size, freeze_old=freeze_old)
+
+    def back_up_head(self):
+        self.rec_head.backup()
+
+    def restore_head(self):
+        self.rec_head.recall()
+
+    def reset_domain_transform(self):
+        self.ui_domain_transform = nn.ModuleList([
+            Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
+            for _ in range(self.num_domains)
+        ])
+        self.iu_domain_transform = nn.ModuleList([
+            Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
+            for _ in range(self.num_domains)
+        ])
+
     def get_original_backbone(self, args):
         return timm.create_model(
             args["backbone_type"],
@@ -673,11 +710,12 @@ class DoTPromptVitNet(nn.Module):
             drop_block_rate=None,
         ).eval()
 
-    def forward(self, x, task_id=-1, train=False, shuffle_tokens=False, head_only=False):
+    def forward(self, x:torch.Tensor, task_id=-1, train=False, shuffle_tokens=False, head_only=False, use_uninstructed=False, domain_id=None) -> dict:
 
         if head_only:
-            x = self.backbone.forward_head(res={'x':x}, pre_logits=True)
-            return x
+            output: dict = self.rec_head(x)
+            output.update({'pre_logits': x})
+            return output
 
         with torch.no_grad():
             if self.original_backbone is not None:
@@ -685,8 +723,27 @@ class DoTPromptVitNet(nn.Module):
             else:
                 cls_features = None
 
-        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
-        x['raw_features'] = cls_features
+        if use_uninstructed:
+            if domain_id is None:
+                output: dict  = self.rec_head(cls_features)
+            else:
+                output_logits = []
+                for d_id in domain_id:
+                    ui_transform = self.ui_domain_transform[d_id]
+                    iu_transform = self.iu_domain_transform[d_id]
+                    fake_uni_features = ui_transform(iu_transform(cls_features))
+                    output_logit = self.rec_head(fake_uni_features)['logits']
+                    output_logits.append(output_logit)
+                # calculate the mean of the logits
+                output_logits = torch.stack(output_logits, dim=0)
+                output_logits = torch.mean(output_logits, dim=0)
+                output = {'logits': output_logits}
+            output.update({'raw_features': cls_features, 'pre_logits': cls_features})
+            return output
+        else:
+            x: dict = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
+            logits= self.rec_head(x['pre_logits'])['logits']
+            x.update({'logits': logits, 'raw_features': cls_features})
         return x
     
     def extract_vector(self, x, task_id=-1, train=False, shuffle_tokens=False):
@@ -698,6 +755,40 @@ class DoTPromptVitNet(nn.Module):
 
         x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
         return x['pre_logits']
+
+    def uni_to_ins(self, uni_feature:torch.Tensor, domain_id:torch.Tensor):
+        """
+        Transform the uninstructed feature to the pseudo instructed feature.
+        Args:
+            uni_feature: uninstructed feature
+            domain_id: domain id of the pseudo-instructed feature
+
+        Returns:
+            pseudo-instructed feature
+        """
+        assert uni_feature.shape[0] == domain_id.shape[0]
+        ins_feature = torch.stack(
+            [self.ui_domain_transform[d_id](x) for d_id, x in zip(domain_id, uni_feature)],
+            dim=0
+        )
+        return ins_feature
+
+    def ins_to_uni(self, ins_feature:torch.Tensor, domain_id:torch.Tensor):
+        """
+        Transform the pseudo instructed feature to the uninstructed feature.
+        Args:
+            ins_feature: pseudo-instructed feature
+            domain_id: domain id of the pseudo-instructed feature
+
+        Returns:
+            uninstructed feature
+        """
+        assert ins_feature.shape[0] == domain_id.shape[0]
+        uni_feature = torch.stack(
+            [self.iu_domain_transform[d_id](x) for d_id, x in zip(domain_id, ins_feature)],
+            dim=0
+        )
+        return uni_feature
 
 # sprompt
 class SPromptVitNet(nn.Module):
