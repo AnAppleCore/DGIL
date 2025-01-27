@@ -11,6 +11,8 @@ from backbone.linears import (CosineLinear, EaseCosineLinear,
                               SplitCosineLinear)
 from backbone.prompt import CodaPrompt
 
+from utils.distributions import *
+
 
 def get_backbone(args, pretrained=False):
     name = args["backbone_type"].lower()
@@ -667,15 +669,7 @@ class DoTPromptVitNet(nn.Module):
         self.embed_dim = self.backbone.embed_dim
         self.act_layer = nn.GELU
         self.drop_rate = args.get("drop_rate", 0.0)
-        if args.get("dot_epochs", 0) > 0:
-            self.ui_domain_transform = nn.ModuleList([
-                Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
-                for _ in range(self.num_domains)
-            ])
-            self.iu_domain_transform = nn.ModuleList([
-                Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
-                for _ in range(self.num_domains)
-            ])
+        self.reset_domain_transform()
         self.rec_head = None
 
     def update_head(self, task_size, freeze_old=True):
@@ -691,14 +685,23 @@ class DoTPromptVitNet(nn.Module):
         self.rec_head.recall()
 
     def reset_domain_transform(self):
-        self.ui_domain_transform = nn.ModuleList([
-            Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
-            for _ in range(self.num_domains)
-        ])
-        self.iu_domain_transform = nn.ModuleList([
-            Mlp(in_features=self.embed_dim, act_layer=self.act_layer, drop=self.drop_rate) 
-            for _ in range(self.num_domains)
-        ])
+        self.ui_weight = nn.Parameter(torch.zeros(self.num_domains, self.embed_dim, self.embed_dim), requires_grad=False)
+        self.ui_bias = nn.Parameter(torch.zeros(self.num_domains, self.embed_dim), requires_grad=False)
+        self.iu_weight = nn.Parameter(torch.zeros(self.num_domains, self.embed_dim, self.embed_dim), requires_grad=False)
+        self.iu_bias = nn.Parameter(torch.zeros(self.num_domains, self.embed_dim), requires_grad=False)
+
+    def update_domain_transform(self, domain_id, ins_dist:CovarianceDist, uni_dist:CovarianceDist):
+
+        ins_mean, ins_cov = ins_dist.mean, ins_dist.cov
+        uni_mean, uni_cov = uni_dist.mean, uni_dist.cov
+
+        ui_weight, ui_bias = compute_transform_mtx(uni_mean, uni_cov, ins_mean, ins_cov)
+        iu_weight, iu_bias = compute_transform_mtx(ins_mean, ins_cov, uni_mean, uni_cov)
+
+        self.ui_weight.data[domain_id] = ui_weight
+        self.ui_bias.data[domain_id] = ui_bias
+        self.iu_weight.data[domain_id] = iu_weight
+        self.iu_bias.data[domain_id] = iu_bias
 
     def get_original_backbone(self, args):
         return timm.create_model(
@@ -729,9 +732,8 @@ class DoTPromptVitNet(nn.Module):
             else:
                 output_logits = []
                 for d_id in domain_id:
-                    ui_transform = self.ui_domain_transform[d_id]
-                    iu_transform = self.iu_domain_transform[d_id]
-                    fake_uni_features = ui_transform(iu_transform(cls_features))
+                    fake_ins_features = self.uni_to_ins(cls_features, d_id)
+                    fake_uni_features = self.ins_to_uni(fake_ins_features, d_id)
                     output_logit = self.rec_head(fake_uni_features)['logits']
                     output_logits.append(output_logit)
                 # calculate the mean of the logits
@@ -766,11 +768,19 @@ class DoTPromptVitNet(nn.Module):
         Returns:
             pseudo-instructed feature
         """
-        assert uni_feature.shape[0] == domain_id.shape[0]
-        ins_feature = torch.stack(
-            [self.ui_domain_transform[d_id](x) for d_id, x in zip(domain_id, uni_feature)],
-            dim=0
-        )
+        if isinstance(domain_id, int):
+            domain_id = torch.tensor([domain_id]* uni_feature.shape[0]).to(uni_feature.device)
+        elif isinstance(domain_id, list):
+            assert uni_feature.shape[0] == len(domain_id)
+            domain_id = torch.tensor(domain_id).to(uni_feature.device)
+        elif isinstance(domain_id, torch.Tensor):
+            assert uni_feature.shape[0] == domain_id.shape[0]
+        else:
+            raise ValueError(f"domain_id should be int, list or tensor, but got {type(domain_id)}")
+        
+        weight = self.ui_weight[domain_id]
+        bias = self.ui_bias[domain_id]
+        ins_feature = torch.bmm(weight, uni_feature.unsqueeze(-1)).squeeze(-1) + bias
         return ins_feature
 
     def ins_to_uni(self, ins_feature:torch.Tensor, domain_id:torch.Tensor):
@@ -783,11 +793,19 @@ class DoTPromptVitNet(nn.Module):
         Returns:
             uninstructed feature
         """
-        assert ins_feature.shape[0] == domain_id.shape[0]
-        uni_feature = torch.stack(
-            [self.iu_domain_transform[d_id](x) for d_id, x in zip(domain_id, ins_feature)],
-            dim=0
-        )
+        if isinstance(domain_id, int):
+            domain_id = torch.tensor([domain_id]* ins_feature.shape[0]).to(ins_feature.device)
+        elif isinstance(domain_id, list):
+            assert ins_feature.shape[0] == len(domain_id)
+            domain_id = torch.tensor(domain_id).to(ins_feature.device)
+        elif isinstance(domain_id, torch.Tensor):
+            assert ins_feature.shape[0] == domain_id.shape[0]
+        else:
+            raise ValueError(f"domain_id should be int, list or tensor, but got {type(domain_id)}")
+
+        weight = self.iu_weight[domain_id]
+        bias = self.iu_bias[domain_id]
+        uni_feature = torch.bmm(weight, ins_feature.unsqueeze(-1)).squeeze(-1) + bias
         return uni_feature
 
 # sprompt
