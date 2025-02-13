@@ -221,13 +221,15 @@ class SimpleContinualLinear(nn.Module):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=.02) 
                 if m.bias is not None:
-                    nn.init.constant_(m.bias, 0) 
+                    nn.init.constant_(m.bias, 0)
+        self.old_state_dict = None
 
     def backup(self):
         self.old_state_dict = deepcopy(self.state_dict())
 
     def recall(self):
-        self.load_state_dict(self.old_state_dict)
+        if self.old_state_dict is not None:
+            self.load_state_dict(self.old_state_dict)
 
     def update(self, nb_classes, freeze_old=True):
         single_head = []

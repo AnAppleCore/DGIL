@@ -36,8 +36,6 @@ class Learner(BaseLearner):
         self.first_sl = args.get("first_sl", False)
         self.slow_rate = args.get("slow_rate", 0.1)
 
-        self.use_cls_con_loss = args.get("use_cls_con_loss", False)
-        self.use_dom_con_loss = args.get("use_dom_con_loss", False)
         self.contrastive_temp = args.get("contrastive_temp", 0.8)
         self.cls_con_weight = args.get("cls_con_weight", 1.00)
         self.dom_con_weight = args.get("dom_con_weight", 1.00)
@@ -170,14 +168,21 @@ class Learner(BaseLearner):
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
                     loss = loss - self.args["pull_constraint_coeff"] * output['reduce_sim']
 
-                if self.use_cls_con_loss:
-                    loss += self.cls_con_weight * self.orth_loss(features, targets)
+                inputs_aug = self.trivial_aug(inputs)
+                outputs_aug = self._network(inputs_aug, task_id=self._cur_task, train=True)
+                logits_aug = outputs_aug["logits"][:, :self._total_classes]
+                logits_aug[:, :self._known_classes] = float('-inf')
+                features_aug = outputs_aug["pre_logits"]
 
-                if self.use_dom_con_loss:
-                    inputs_aug = self.trivial_aug(inputs)
-                    # inputs_aug = self.rand_aug(inputs)
-                    features_aug = self._network(inputs_aug, task_id=self._cur_task, train=True)["pre_logits"]
-                    loss += self.dom_con_weight * self.div_loss(features, features_aug, targets)
+                loss += F.cross_entropy(logits_aug, targets.long())
+                if self.args["pull_constraint"] and 'reduce_sim' in outputs_aug:
+                    loss += self.args["pull_constraint_coeff"] * outputs_aug['reduce_sim']
+
+                if self.cls_con_weight > 0:
+                    loss += self.cls_con_weight * self.orth_loss(features, features_aug)
+
+                if self.dom_con_weight > 0:
+                    loss += self.dom_con_weight * self.mmda_loss(torch.cat([features, features_aug], dim=0))
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -284,7 +289,7 @@ class Learner(BaseLearner):
         logging.info(f"Distributions computed for {unique_labels.shape[0]} classes: {unique_labels.tolist()} ")
 
         # for domain distribution
-        if self.use_dom_con_loss:
+        if self.dom_con_weight > 0:
             mean = features.mean(dim=0)
             cov = torch.cov(features.t())
             if self._cur_domain in self.domain_distributions:
@@ -299,7 +304,6 @@ class Learner(BaseLearner):
             logging.info(f"Distributions computed for domain {self._cur_domain}")
 
     def _train_transformation(self):
-        # TODO mlp? linear? or even solve a linear system?
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
         self._network.reset_domain_transform()
@@ -454,45 +458,47 @@ class Learner(BaseLearner):
                 tgt = label[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
                 dom_id = domain_id[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
 
-                # generate fake ins features
-                with torch.no_grad():
-                    if isinstance(self._network, nn.DataParallel):
-                        fake_ins = self._network.module.uni_to_ins(uni_inp, domain_id=dom_id)
-                    else:
-                        fake_ins = self._network.uni_to_ins(uni_inp, domain_id=dom_id)
-
-                    fake_uni_ls = []
-                    fake_uni_2_ls = []
-
-                    for d_id in range(len(self.domain_distributions)):
-                        d_id_tensor = torch.ones(num_sampled_pcls, device=self._device).long() * d_id
-                        if isinstance(self._network, nn.DataParallel):
-                            fake_uni = self._network.module.ins_to_uni(ins_inp, domain_id=d_id_tensor)
-                            fake_uni_2 = self._network.module.ins_to_uni(fake_ins, domain_id=d_id_tensor)
-                        else:
-                            fake_uni = self._network.ins_to_uni(ins_inp, domain_id=d_id_tensor)
-                            fake_uni_2 = self._network.ins_to_uni(fake_ins, domain_id=d_id_tensor)
-                        fake_uni_ls.append(fake_uni)
-                        fake_uni_2_ls.append(fake_uni_2)
-                
-                fake_uni_ls = torch.cat(fake_uni_ls, dim=0).detach()
-                fake_uni_2_ls = torch.cat(fake_uni_2_ls, dim=0).detach()
-
                 logit_uni = self._network(uni_inp, head_only=True)['logits']
-                logit_fake_uni = self._network(fake_uni_ls, head_only=True)['logits']
-                logit_fake_uni_2 = self._network(fake_uni_2_ls, head_only=True)['logits']
-
                 logit_uni = self.logit_normalize(logit_uni)
-                logit_fake_uni = self.logit_normalize(logit_fake_uni)
-                logit_fake_uni_2 = self.logit_normalize(logit_fake_uni_2)
-
                 loss_uni = F.cross_entropy(logit_uni, tgt)
+                loss = loss_uni
 
-                tgt_for_fake = tgt.repeat(fake_uni_ls.size(0)//tgt.size(0))
-                loss_fake_uni = F.cross_entropy(logit_fake_uni, tgt_for_fake)
-                loss_fake_uni_2 = F.cross_entropy(logit_fake_uni_2, tgt_for_fake)
+                if self.fake_ce_loss_weight > 0:
+                    # generate fake ins, uni features
+                    with torch.no_grad():
+                        if isinstance(self._network, nn.DataParallel):
+                            fake_ins = self._network.module.uni_to_ins(uni_inp, domain_id=dom_id)
+                        else:
+                            fake_ins = self._network.uni_to_ins(uni_inp, domain_id=dom_id)
 
-                loss = loss_uni + (loss_fake_uni + loss_fake_uni_2) * self.fake_ce_loss_weight
+                        fake_uni_ls = []
+                        fake_uni_2_ls = []
+
+                        for d_id in range(len(self.domain_distributions)):
+                            d_id_tensor = torch.ones(num_sampled_pcls, device=self._device).long() * d_id
+                            if isinstance(self._network, nn.DataParallel):
+                                fake_uni = self._network.module.ins_to_uni(ins_inp, domain_id=d_id_tensor)
+                                fake_uni_2 = self._network.module.ins_to_uni(fake_ins, domain_id=d_id_tensor)
+                            else:
+                                fake_uni = self._network.ins_to_uni(ins_inp, domain_id=d_id_tensor)
+                                fake_uni_2 = self._network.ins_to_uni(fake_ins, domain_id=d_id_tensor)
+                            fake_uni_ls.append(fake_uni)
+                            fake_uni_2_ls.append(fake_uni_2)
+                
+                    fake_uni_ls = torch.cat(fake_uni_ls, dim=0).detach()
+                    fake_uni_2_ls = torch.cat(fake_uni_2_ls, dim=0).detach()
+
+                    logit_fake_uni = self._network(fake_uni_ls, head_only=True)['logits']
+                    logit_fake_uni_2 = self._network(fake_uni_2_ls, head_only=True)['logits']
+
+                    logit_fake_uni = self.logit_normalize(logit_fake_uni)
+                    logit_fake_uni_2 = self.logit_normalize(logit_fake_uni_2)
+
+                    tgt_for_fake = tgt.repeat(fake_uni_ls.size(0)//tgt.size(0))
+                    loss_fake_uni = F.cross_entropy(logit_fake_uni, tgt_for_fake)
+                    loss_fake_uni_2 = F.cross_entropy(logit_fake_uni_2, tgt_for_fake)
+
+                    loss += (loss_fake_uni + loss_fake_uni_2) * self.fake_ce_loss_weight
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -503,19 +509,20 @@ class Learner(BaseLearner):
                 correct += preds.eq(tgt.expand_as(preds)).cpu().sum()
                 total += len(tgt)
 
-                _, preds = torch.max(logit_fake_uni, dim=1)
-                correct_fake += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
-                total_fake += len(tgt_for_fake)
+                if self.fake_ce_loss_weight > 0:
+                    _, preds = torch.max(logit_fake_uni, dim=1)
+                    correct_fake += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
+                    total_fake += len(tgt_for_fake)
 
-                _, preds = torch.max(logit_fake_uni_2, dim=1)
-                correct_fake_2 += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
-                total_fake_2 += len(tgt_for_fake)
+                    _, preds = torch.max(logit_fake_uni_2, dim=1)
+                    correct_fake_2 += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
+                    total_fake_2 += len(tgt_for_fake)
 
             scheduler.step()
 
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-            train_acc_fake = np.around(tensor2numpy(correct_fake) * 100 / total_fake, decimals=2)
-            train_acc_fake_2 = np.around(tensor2numpy(correct_fake_2) * 100 / total_fake_2, decimals=2)
+            train_acc_fake = np.around(tensor2numpy(correct_fake) * 100 / total_fake, decimals=2) if self.fake_ce_loss_weight > 0 else 0
+            train_acc_fake_2 = np.around(tensor2numpy(correct_fake_2) * 100 / total_fake_2, decimals=2) if self.fake_ce_loss_weight > 0 else 0
 
             if (epoch + 1) % 5 == 0 or epoch == self.ca_epochs - 1:
                 test_acc = self._compute_accuracy(self._network, test_loader, use_uninstructed=True)
@@ -641,12 +648,12 @@ class Learner(BaseLearner):
 
     def _eval_cnn(self, loader):
         self._network.eval()
-        # TODO use multi-domain instructed feature for cnn?
+        # TODO use multi-domain instructed/uninstructed feature for cnn?
         y_pred, y_true = [], []
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs, task_id=self._cur_task, use_uninstructed=True)["logits"][:, :self._total_classes]
+                outputs = self._network(inputs, task_id=self._cur_task, use_uninstructed=(self.ca_epochs > 0))["logits"][:, :self._total_classes]
             predicts = torch.topk(
                 outputs, k=self.topk, dim=1, largest=True, sorted=True
             )[
@@ -659,7 +666,7 @@ class Learner(BaseLearner):
     
     def _eval_nme(self, loader, class_means:dict):
         self._network.eval()
-        # TODO use multi-domain instructed feature for nme?
+        # TODO use multi-domain instructed/uninstructed feature for nme?
         vectors, y_true = self._extract_vectors(loader)
         vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
 
@@ -714,7 +721,7 @@ class Learner(BaseLearner):
 
     def _compute_accuracy(self, model, loader, use_uninstructed=False):
         model.eval()
-        # TODO use multi-domain instructed feature for acc computation?
+        # TODO use multi-domain instructed/uninstructed feature for acc computation?
         correct, total = 0, 0
         for i, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
@@ -726,7 +733,7 @@ class Learner(BaseLearner):
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
     
-    def orth_loss(self, features:torch.Tensor, targets:torch.Tensor):
+    def orth_loss(self, features:torch.Tensor, features_aug:torch.Tensor):
         """
         Computes the orthogonality loss using contrastive learning.
 
@@ -740,10 +747,10 @@ class Learner(BaseLearner):
         if self.class_distributions:
             sample_mean = []
             batch_size = features.shape[0]
-            num_samples_per_class = batch_size // self._total_classes + 1
+            num_samples_per_class = batch_size // self._known_classes + 1
             for class_id, class_dist in self.class_distributions.items():
                 if isinstance(class_dist, MultiCentroidDist):
-                    sample_mean.append(class_dist.get_means_vector())
+                    sample_mean.append(class_dist.generate(num_samples_per_class))
                 elif isinstance(class_dist, CovarianceDist):
                     sample_mean.append(class_dist.generate(num_samples_per_class))
             sample_mean = torch.cat(sample_mean, dim=0).to(self._device, non_blocking=True)
@@ -751,17 +758,62 @@ class Learner(BaseLearner):
                 shuffle_idx = torch.randperm(sample_mean.shape[0])[:batch_size]
                 sample_mean = sample_mean[shuffle_idx]
 
-            M = torch.cat([sample_mean, features], dim=0).to(self._device, non_blocking=True)
-            M = F.normalize(M, dim=1)
-            sim = torch.matmul(M, M.t()) / self.contrastive_temp
+            M_1 = torch.cat([features, sample_mean], dim=0).to(self._device, non_blocking=True)
+            M_2 = torch.cat([features_aug, sample_mean], dim=0).to(self._device, non_blocking=True)
+            M_1 = F.normalize(M_1, dim=1)
+            M_2 = F.normalize(M_2, dim=1)
+            sim = torch.matmul(M_1, M_2.t()) / 0.8
 
         else:
             features = F.normalize(features, dim=1)
-            sim = torch.matmul(features, features.t()) / self.contrastive_temp
+            features_aug = F.normalize(features_aug, dim=1)
+            sim = torch.matmul(features, features_aug.t()) / 0.8
 
         loss = F.cross_entropy(sim, torch.arange(sim.shape[0], device=self._device).long())
         # logging.info(f"orth_loss: {loss}")
         return loss
+
+    def mmda_loss(self, features:torch.Tensor):
+        if not hasattr(self, '_domain_means') or len(self._domain_means) == 0:
+            return 0.0
+
+        mmda_loss = 0.0
+        for domain_id, domain_dist in self.domain_distributions.items():
+            if isinstance(domain_dist, MultiCentroidDist):
+                domain_features = domain_dist.generate(features.shape[0])
+            elif isinstance(domain_dist, CovarianceDist):
+                domain_features = domain_dist.generate(features.shape[0])
+            mmda_loss += self._compute_mmd(features, domain_features)
+
+        mmda_loss /= len(self.domain_distributions.keys())
+        # logging.info(f"mmda_loss: {mmda_loss}")
+        return mmda_loss
+
+
+    def _compute_mmd(self, x, y, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+        def gaussian_kernel(source, target):
+            n_samples = int(source.size()[0]) + int(target.size()[0])
+            total = torch.cat([source, target], dim=0)
+            total0 = total.unsqueeze(0).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+            total1 = total.unsqueeze(1).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
+            L2_distance = ((total0 - total1) ** 2).sum(2) + 1e-8
+            if fix_sigma:
+                bandwidth = fix_sigma
+            else:
+                bandwidth = torch.sum(L2_distance.data) / (n_samples ** 2 - n_samples)
+            bandwidth /= kernel_mul ** (kernel_num // 2)
+            bandwidth_list = [bandwidth * (kernel_mul ** i) for i in range(kernel_num)]
+            kernel_val = [torch.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
+            return sum(kernel_val)
+        
+        batch_size = int(x.size()[0])
+        kernels = gaussian_kernel(x, y)
+        XX = kernels[:batch_size, :batch_size]
+        YY = kernels[batch_size:, batch_size:]
+        XY = kernels[:batch_size, batch_size:]
+        YX = kernels[batch_size:, :batch_size]
+        mmd = torch.mean(XX + YY - XY -YX)
+        return mmd
 
     def div_loss(self, features: torch.Tensor, features_aug: torch.Tensor, targets: torch.Tensor):
         """
