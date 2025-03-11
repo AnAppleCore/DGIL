@@ -9,6 +9,7 @@ from torch import nn
 from backbone.linears import (CosineLinear, EaseCosineLinear,
                               SimpleContinualLinear, SimpleLinear,
                               SplitCosineLinear)
+from backbone.module import *
 from backbone.prompt import CodaPrompt
 
 
@@ -1316,6 +1317,9 @@ class SLCANet(BaseNet):
         super().__init__(args, pretrained)
         self.old_fc = None
         self.fc_with_ln = fc_with_ln
+        self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
+        self.class_clf = None
+        self.domain_clf = None
 
 
     def extract_layerwise_vector(self, x, pool=True):
@@ -1345,6 +1349,11 @@ class SLCANet(BaseNet):
         fc = SimpleContinualLinear(in_dim, out_dim)
 
         return fc
+    
+    def reset_domain_tsf_clf(self, nb_classes, num_domains):
+        self.domain_tsf.reset()
+        self.class_clf = nn.Linear(self.feature_dim, nb_classes)
+        self.domain_clf = nn.Linear(self.feature_dim, num_domains)
 
     def forward(self, x, bcb_no_grad=False, fc_only=False):
         if fc_only:

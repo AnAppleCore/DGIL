@@ -43,14 +43,9 @@ class Learner(BaseLearner):
         self.use_multicentroid_nme = args.get("use_multicentroid_nme", False)
 
         #TODO parameter tuning
-        self.dot_epochs = args.get("dot_epochs", 0)
-        self.dot_lr = args.get("dot_lr", 0.001)
-        self.loss_cycle_weight = args.get("loss_cycle_weight", 1.0)
-    
         self.ca_epochs = args.get("ca_epochs", 0)
         self.ca_lr = args.get("ca_lr", 0.001)
         self.logit_norm = args.get("logit_norm", 0.1)
-        self.fake_ce_loss_weight = args.get("fake_ce_loss_weight", 1.0)
 
         # Freeze the parameters for ViT.
         if self.args["freeze"]:
@@ -123,8 +118,6 @@ class Learner(BaseLearner):
             self._network = nn.DataParallel(self._network, self._multiple_gpus)
         self._train(self.train_loader, self.test_loader) # prompt tuning
         self._compute_distributions(self.train_loader) # compute class and domain distributions
-        if self.dot_epochs > 0:
-            self._train_transformation() # train u->i and i->u transformations
         if self.ca_epochs > 0:
             self._train_classifier(self.test_loader) # rectify head by pseudo instructed features
         if len(self._multiple_gpus) > 1:
@@ -155,6 +148,7 @@ class Learner(BaseLearner):
                 self._network.original_backbone.eval()
 
             losses = 0.0
+            orth_losses, mmda_losses = 0.0, 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
@@ -179,10 +173,14 @@ class Learner(BaseLearner):
                     loss += self.args["pull_constraint_coeff"] * outputs_aug['reduce_sim']
 
                 if self.cls_con_weight > 0:
-                    loss += self.cls_con_weight * self.orth_loss(features, features_aug)
+                    orth_loss = self.cls_con_weight * self.orth_loss(features, features_aug)
+                    loss += orth_loss
+                    orth_losses += orth_loss.item() if orth_loss != 0.0 else 0.0
 
                 if self.dom_con_weight > 0:
-                    loss += self.dom_con_weight * self.mmda_loss(torch.cat([features, features_aug], dim=0))
+                    mmda_loss = self.dom_con_weight * self.mmda_loss(torch.cat([features, features_aug], dim=0))
+                    loss += mmda_loss
+                    mmda_losses += mmda_loss.item() if mmda_loss != 0.0 else 0.0
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -199,25 +197,29 @@ class Learner(BaseLearner):
 
             if (epoch + 1) % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f} (orth {:.3f}, mmda {:.3f}), Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.args['tuned_epoch'],
                     losses / len(train_loader),
+                    orth_losses / len(train_loader),
+                    mmda_losses / len(train_loader),
                     train_acc,
                     test_acc,
                 )
             else:
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f} (orth {:.3f}, mmda {:.3f}), Train_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.args['tuned_epoch'],
                     losses / len(train_loader),
+                    orth_losses / len(train_loader),
+                    mmda_losses / len(train_loader),
                     train_acc,
                 )
             prog_bar.set_description(info)
 
-        logging.info(info)
+            logging.info(info)
 
     def _compute_distributions(self, data_loader):
         if len(self._multiple_gpus) > 1:
@@ -303,96 +305,6 @@ class Learner(BaseLearner):
                 self.domain_distributions[self._cur_domain] = new_distribution
             logging.info(f"Distributions computed for domain {self._cur_domain}")
 
-    def _train_transformation(self):
-        if len(self._multiple_gpus) > 1:
-            self._network = self._network.module
-        self._network.reset_domain_transform()
-        param_list = []
-        for name, param in self._network.named_parameters():
-            if 'domain_transform' in name:
-                param.requires_grad = True
-                param_list.append(param)
-        total_params = sum(p.numel() for p in param_list)
-        logging.info(f"Transform Trainable parameter count: {total_params}")
-        param_groups = [{'params': param_list, 'lr': self.dot_lr, 'weight_decay': self.weight_decay}]
-        optimizer = optim.SGD(param_groups, lr=self.dot_lr, momentum=0.9, weight_decay=self.weight_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.dot_epochs, eta_min=self.min_lr)
-
-        if len(self._multiple_gpus) > 1:
-            self._network = nn.DataParallel(self._network, self._multiple_gpus)
-        self._network.to(self._device)
-        self._network.train()
-
-        prog_bar = tqdm(range(self.dot_epochs), desc="Transform training")
-        for _, epoch in enumerate(prog_bar):
-            losses = 0.0
-
-            sampled_ins_feature = []
-            sampled_uni_feature = []
-            sampled_domain_id = []
-            num_sampled_pcls = self.batch_size * 5
-
-            for c_id in range(self._total_classes):
-                t_id = self.class_to_task_map[c_id]
-                decay = (t_id + 1) / (self._cur_task + 1) * 0.1
-
-                ins_proto_dist: MultiPrototypeDist = self.ins_cls_proto_dists[c_id]
-                uni_proto_dist: MultiPrototypeDist = self.uni_cls_proto_dists[c_id]
-                ins_feature, shuffle_idx = ins_proto_dist.generate(num_sampled_pcls, decay=decay)
-                uni_feature = uni_proto_dist.generate(num_sampled_pcls, shuffle_idx, decay=decay)[0]
-
-                sampled_ins_feature.append(ins_feature)
-                sampled_uni_feature.append(uni_feature)
-                sampled_domain_id.append(
-                    torch.ones(num_sampled_pcls, device=self._device).long() * self.class_to_domain_map[c_id]
-                )
-
-            ins_feature = torch.cat(sampled_ins_feature, dim=0).float().to(self._device)
-            uni_feature = torch.cat(sampled_uni_feature, dim=0).float().to(self._device)
-            domain_id = torch.cat(sampled_domain_id, dim=0).long().to(self._device)
-
-            sf_indexes = torch.randperm(ins_feature.size(0))
-            ins_feature = ins_feature[sf_indexes]
-            uni_feature = uni_feature[sf_indexes]
-            domain_id = domain_id[sf_indexes]
-
-            for _iter in range(self._total_classes):
-                ins_inp = ins_feature[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-                uni_inp = uni_feature[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-                dom_id = domain_id[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-
-                if isinstance(self._network, nn.DataParallel):
-                    fake_ins = self._network.module.uni_to_ins(uni_inp, domain_id=dom_id)
-                    fake_uni = self._network.module.ins_to_uni(ins_inp, domain_id=dom_id)
-                    fake_ins_2 = self._network.module.uni_to_ins(fake_uni, domain_id=dom_id)
-                    fake_uni_2 = self._network.module.ins_to_uni(fake_ins, domain_id=dom_id)
-
-                else:
-                    fake_ins = self._network.uni_to_ins(uni_inp, domain_id=dom_id)
-                    fake_uni = self._network.ins_to_uni(ins_inp, domain_id=dom_id)
-                    fake_ins_2 = self._network.uni_to_ins(fake_uni, domain_id=dom_id)
-                    fake_uni_2 = self._network.ins_to_uni(fake_ins, domain_id=dom_id)
-
-                loss_rec = F.mse_loss(fake_ins, ins_inp) + F.mse_loss(fake_uni, uni_inp)
-                loss_cycle = F.mse_loss(fake_ins_2, ins_inp) + F.mse_loss(fake_uni_2, uni_inp)
-
-                loss = loss_rec + loss_cycle * self.loss_cycle_weight
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses += loss.item()
-
-            scheduler.step()
-
-            info = "Transform Task {}, Epoch {}/{} => Loss {:.3f}".format(
-                self._cur_task,
-                epoch + 1,
-                self.dot_epochs,
-                losses / len(ins_feature)
-            )
-            prog_bar.set_description(info)
-        logging.info(info)
-
     def _train_classifier(self, test_loader):
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
@@ -463,43 +375,6 @@ class Learner(BaseLearner):
                 loss_uni = F.cross_entropy(logit_uni, tgt)
                 loss = loss_uni
 
-                if self.fake_ce_loss_weight > 0:
-                    # generate fake ins, uni features
-                    with torch.no_grad():
-                        if isinstance(self._network, nn.DataParallel):
-                            fake_ins = self._network.module.uni_to_ins(uni_inp, domain_id=dom_id)
-                        else:
-                            fake_ins = self._network.uni_to_ins(uni_inp, domain_id=dom_id)
-
-                        fake_uni_ls = []
-                        fake_uni_2_ls = []
-
-                        for d_id in range(len(self.domain_distributions)):
-                            d_id_tensor = torch.ones(num_sampled_pcls, device=self._device).long() * d_id
-                            if isinstance(self._network, nn.DataParallel):
-                                fake_uni = self._network.module.ins_to_uni(ins_inp, domain_id=d_id_tensor)
-                                fake_uni_2 = self._network.module.ins_to_uni(fake_ins, domain_id=d_id_tensor)
-                            else:
-                                fake_uni = self._network.ins_to_uni(ins_inp, domain_id=d_id_tensor)
-                                fake_uni_2 = self._network.ins_to_uni(fake_ins, domain_id=d_id_tensor)
-                            fake_uni_ls.append(fake_uni)
-                            fake_uni_2_ls.append(fake_uni_2)
-                
-                    fake_uni_ls = torch.cat(fake_uni_ls, dim=0).detach()
-                    fake_uni_2_ls = torch.cat(fake_uni_2_ls, dim=0).detach()
-
-                    logit_fake_uni = self._network(fake_uni_ls, head_only=True)['logits']
-                    logit_fake_uni_2 = self._network(fake_uni_2_ls, head_only=True)['logits']
-
-                    logit_fake_uni = self.logit_normalize(logit_fake_uni)
-                    logit_fake_uni_2 = self.logit_normalize(logit_fake_uni_2)
-
-                    tgt_for_fake = tgt.repeat(fake_uni_ls.size(0)//tgt.size(0))
-                    loss_fake_uni = F.cross_entropy(logit_fake_uni, tgt_for_fake)
-                    loss_fake_uni_2 = F.cross_entropy(logit_fake_uni_2, tgt_for_fake)
-
-                    loss += (loss_fake_uni + loss_fake_uni_2) * self.fake_ce_loss_weight
-
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -509,42 +384,27 @@ class Learner(BaseLearner):
                 correct += preds.eq(tgt.expand_as(preds)).cpu().sum()
                 total += len(tgt)
 
-                if self.fake_ce_loss_weight > 0:
-                    _, preds = torch.max(logit_fake_uni, dim=1)
-                    correct_fake += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
-                    total_fake += len(tgt_for_fake)
-
-                    _, preds = torch.max(logit_fake_uni_2, dim=1)
-                    correct_fake_2 += preds.eq(tgt_for_fake.expand_as(preds)).cpu().sum()
-                    total_fake_2 += len(tgt_for_fake)
-
             scheduler.step()
 
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-            train_acc_fake = np.around(tensor2numpy(correct_fake) * 100 / total_fake, decimals=2) if self.fake_ce_loss_weight > 0 else 0
-            train_acc_fake_2 = np.around(tensor2numpy(correct_fake_2) * 100 / total_fake_2, decimals=2) if self.fake_ce_loss_weight > 0 else 0
 
             if (epoch + 1) % 5 == 0 or epoch == self.ca_epochs - 1:
                 test_acc = self._compute_accuracy(self._network, test_loader, use_uninstructed=True)
-                info = "Head Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Train_accy_fake {:.2f}, Train_accy_fake_2 {:.2f}, Test_accy {:.2f}".format(
+                info = "Head Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.ca_epochs,
                     losses / len(ins_feature),
                     train_acc,
-                    train_acc_fake,
-                    train_acc_fake_2,
                     test_acc,
                 )
             else:
-                info = "Head Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Train_accy_fake {:.2f}, Train_accy_fake_2 {:.2f}".format(
+                info = "Head Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.ca_epochs,
                     losses / len(ins_feature),
-                    train_acc,
-                    train_acc_fake,
-                    train_acc_fake_2,
+                    train_acc
                 )
             prog_bar.set_description(info)
         logging.info(info)
@@ -774,7 +634,7 @@ class Learner(BaseLearner):
         return loss
 
     def mmda_loss(self, features:torch.Tensor):
-        if not hasattr(self, '_domain_means') or len(self._domain_means) == 0:
+        if not hasattr(self, 'domain_distributions') or len(self.domain_distributions.keys()) == 0:
             return 0.0
 
         mmda_loss = 0.0
@@ -788,7 +648,6 @@ class Learner(BaseLearner):
         mmda_loss /= len(self.domain_distributions.keys())
         # logging.info(f"mmda_loss: {mmda_loss}")
         return mmda_loss
-
 
     def _compute_mmd(self, x, y, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
         def gaussian_kernel(source, target):

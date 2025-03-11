@@ -135,7 +135,7 @@ class MultiCentroidDist:
         closest_indices = torch.tensor(closest_indices).to(self.device)
         return closest_indices
     
-    def generate(self, num_samples_to_generate):
+    def generate(self, num_samples_to_generate, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.cluster_means is None:
             raise ValueError("Cannot generate samples because the centroids are not computed.")
@@ -148,8 +148,9 @@ class MultiCentroidDist:
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for cluster {i} contains NaN or inf values.")
+                cluster_mean = self.cluster_means[i] * (0.9 + decay)
                 mvn = dist.MultivariateNormal(
-                    self.cluster_means[i], 
+                    cluster_mean, 
                     covariance_matrix=cov_reg
                 )
                 feature_vector = mvn.sample((num_samples_to_generate,))
@@ -160,7 +161,7 @@ class MultiCentroidDist:
         
         return feature_vectors
     
-    def generate_per_centroid(self, num_samples_per_centroid):
+    def generate_per_centroid(self, num_samples_per_centroid, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.cluster_means is None:
             raise ValueError("Cannot generate samples because the centroids are not computed.")
@@ -173,8 +174,9 @@ class MultiCentroidDist:
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for cluster {i} contains NaN or inf values.")
+                cluster_mean = self.cluster_means[i] * (0.9 + decay)
                 mvn = dist.MultivariateNormal(
-                    self.cluster_means[i], 
+                    cluster_mean, 
                     covariance_matrix=cov_reg
                 )
                 feature_vector = mvn.sample((num_samples_per_centroid,))

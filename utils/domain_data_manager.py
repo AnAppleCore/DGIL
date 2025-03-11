@@ -84,6 +84,10 @@ class DomainDataManager(DataManager):
             self._test_data = np.concatenate(self._test_data)
             self._test_targets = np.concatenate(self._test_targets)
 
+            self.original_train_data = self._train_data
+            self.original_train_targets = self._train_targets
+            self.original_train_domain_idx = self._train_domain_idx
+
             return
 
         else:
@@ -124,6 +128,13 @@ class DomainDataManager(DataManager):
                 logging.info("Number of trainings imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(np.where(self._train_domain_idx == d)[0]), len(self._train_data[d])))
                 logging.info("Number of test imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
 
+            self._original_train_data = np.concatenate(self._train_data)
+            self._original_train_targets = np.concatenate(self._train_targets)
+            self._original_train_domain_idx = []
+            for d in range(self.num_domains):
+                self._original_train_domain_idx.append(np.ones(len(self._original_train_data[d]), dtype=np.int32) * d)
+            self.original_train_domain_idx = np.concatenate(self._original_train_domain_idx)
+
             self._train_data = np.concatenate(_train_data)
             self._train_targets = np.concatenate(_train_targets)
             self._test_data = np.concatenate(self._test_data)
@@ -144,10 +155,24 @@ class DomainDataManager(DataManager):
         self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None
     ):
         if source == "train":
-            domain_idx = np.where(self._train_domain_idx == domain_id)[0]
-            x, y = self._train_data[domain_idx], self._train_targets[domain_idx]
+            if type(domain_id) == list:
+                domain_idx = np.where(np.isin(self._original_train_domain_idx, domain_id))[0]
+            elif type(domain_id) == int:
+                domain_idx = np.where(self._original_train_domain_idx == domain_id)[0]
+            elif domain_id == 'all':
+                domain_idx = np.arange(len(self._original_train_data))
+            else:
+                raise ValueError("Unknown domain_id type {}.".format(type(domain_id)))
+            x, y = self._original_train_data[domain_idx], self._original_train_targets[domain_idx]
         elif source == "test":
-            domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+            if type(domain_id) == list:
+                domain_idx = np.where(np.isin(self._test_domain_idx, domain_id))[0]
+            elif type(domain_id) == int:
+                domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+            elif domain_id == 'all':
+                domain_idx = np.arange(len(self._test_data))
+            else:
+                raise ValueError("Unknown domain_id type {}.".format(type(domain_id)))
             x, y = self._test_data[domain_idx], self._test_targets[domain_idx]
         else:
             raise ValueError("Unknown data source {}.".format(source))
