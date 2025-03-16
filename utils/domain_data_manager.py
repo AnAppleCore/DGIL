@@ -132,8 +132,8 @@ class DomainDataManager(DataManager):
             self._original_train_targets = np.concatenate(self._train_targets)
             self._original_train_domain_idx = []
             for d in range(self.num_domains):
-                self._original_train_domain_idx.append(np.ones(len(self._original_train_data[d]), dtype=np.int32) * d)
-            self.original_train_domain_idx = np.concatenate(self._original_train_domain_idx)
+                self._original_train_domain_idx.append(np.ones(len(self._train_data[d]), dtype=np.int32) * d)
+            self._original_train_domain_idx = np.concatenate(self._original_train_domain_idx)
 
             self._train_data = np.concatenate(_train_data)
             self._train_targets = np.concatenate(_train_targets)
@@ -152,13 +152,16 @@ class DomainDataManager(DataManager):
 
 
     def get_domain_dataset(
-        self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None
+        self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None, exclude=False
     ):
         if source == "train":
             if type(domain_id) == list:
                 domain_idx = np.where(np.isin(self._original_train_domain_idx, domain_id))[0]
             elif type(domain_id) == int:
-                domain_idx = np.where(self._original_train_domain_idx == domain_id)[0]
+                if exclude:
+                    domain_idx = np.where(self._original_train_domain_idx != domain_id)[0]
+                else:
+                    domain_idx = np.where(self._original_train_domain_idx == domain_id)[0]
             elif domain_id == 'all':
                 domain_idx = np.arange(len(self._original_train_data))
             else:
@@ -168,7 +171,10 @@ class DomainDataManager(DataManager):
             if type(domain_id) == list:
                 domain_idx = np.where(np.isin(self._test_domain_idx, domain_id))[0]
             elif type(domain_id) == int:
-                domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+                if exclude:
+                    domain_idx = np.where(self._test_domain_idx != domain_id)[0]
+                else:
+                    domain_idx = np.where(self._test_domain_idx == domain_id)[0]
             elif domain_id == 'all':
                 domain_idx = np.arange(len(self._test_data))
             else:

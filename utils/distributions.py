@@ -34,14 +34,15 @@ class CovarianceDist:
         self.cov += (self.num_samples * new_samples) / (total_samples ** 2) * torch.outer(diff, diff)
         self.num_samples = total_samples
 
-    def generate(self, num_samples_to_generate):
+    def generate(self, num_samples_to_generate, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.num_samples == 0:
             raise ValueError("Cannot generate samples because the distribution is empty.")
         cov_reg = self.cov + 1e-4 * torch.eye(self.cov.shape[0], device=self.device)
         if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
             raise ValueError("Covariance matrix contains NaN or inf values after regularization.")
-        mvn = dist.MultivariateNormal(self.mean, covariance_matrix=cov_reg)
+        mean_vec = self.mean * (0.9 + decay)
+        mvn = dist.MultivariateNormal(mean_vec, covariance_matrix=cov_reg)
         feature_vector = mvn.sample((num_samples_to_generate,)).to(self.device)
 
         return feature_vector

@@ -271,18 +271,12 @@ class Learner(BaseLearner):
                 ptp_tgts = torch.cat(ptp_tgts, dim=0)
                 ptp_dids = torch.cat(ptp_dids, dim=0)
 
-                logits = self._network.class_clf(inp)
-                fake_logits = self._network.class_clf(fake_inps)
-                ptp_logits = self._network.class_clf(ptp_inps)
-
-                cls_loss = sup_con(
-                    features=torch.cat([logits, fake_logits, ptp_logits], dim=0),
-                    labels=torch.cat([tgt, fake_tgts, ptp_tgts], dim=0)
-                )
-
                 all_inps = torch.cat([inp, ptp_inps, fake_inps], dim=0)
                 all_tgts = torch.cat([tgt, ptp_tgts, fake_tgts], dim=0)
                 all_dids = torch.cat([did, ptp_dids, fake_dids], dim=0)
+
+                all_class_outputs = self._network.class_clf(all_inps)
+                cls_loss = sup_con(features=all_class_outputs, labels=all_tgts)
 
                 all_domain_outputs = self._network.domain_clf(all_inps)
                 dom_loss = sup_con(features=all_domain_outputs, labels=all_dids)
@@ -298,8 +292,9 @@ class Learner(BaseLearner):
 
                 # tsne visualization
                 if epoch == run_epochs-1 and _iter == crct_num-1 and self.tsne_visualize:
-                    self.img_folder = f"./imgs/{time.strftime('%Y%m%d_%H%M%S')}" if not hasattr(self, 'img_folder') else self.img_folder
-                    os.makedirs(self.img_folder, exist_ok=True)
+                    if not hasattr(self, 'img_folder'):
+                        self.img_folder = f"./imgs/{time.strftime('%Y%m%d_%H%M%S')}_{self.tsne_visualize}"
+                        os.makedirs(self.img_folder, exist_ok=True)
                     with torch.no_grad():
                         tsne = TSNE(n_components=2)
                         vis_features = tsne.fit_transform(all_inps.cpu().numpy())
