@@ -2,9 +2,11 @@ import logging
 import os
 import time
 
+import kornia.augmentation as K
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from kornia.augmentation.auto import RandAugment, TrivialAugment
 from sklearn.manifold import TSNE
 from torch import nn, optim
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -36,7 +38,10 @@ class Learner(BaseLearner):
         self.save_before_ca = args.get('save_before_ca', False)
 
         self.dot_epochs = args.get('dot_epochs', 0)
-        
+
+        self.rand_aug = K.AugmentationSequential(RandAugment(n=2, m=10))
+        self.trivial_aug = K.AugmentationSequential(TrivialAugment())
+
         self.args = args
         self.seed = args['seed']
         self.task_sizes = []
@@ -498,6 +503,32 @@ class Learner(BaseLearner):
 
         logging.info('Compute domain distribution for domain {}'.format(self._cur_domain))
 
+    
+    def _extract_layerwise_vectors(self, loader, pool=True):
+        self._network.eval()
+        vectors, targets = {}, {}
+
+        with torch.no_grad():
+            for _, _inputs, _targets in loader:
+                _targets = _targets.numpy()
+                if isinstance(self._network, nn.DataParallel):
+                    _vectors = self._network.module.extract_layerwise_vector(_inputs.to(self._device), pool=pool)
+                else:
+                    _vectors = self._network.extract_layerwise_vector(_inputs.to(self._device), pool=pool)
+                
+                if len(vectors.keys()) == 0:
+                    for layer_id in range(len(_vectors)):
+                        vectors[layer_id] = []
+                        targets[layer_id] = []
+                for layer_id in range(len(_vectors)):
+                    vectors[layer_id].append(_vectors[layer_id])
+                    targets[layer_id].append(_targets)
+
+        for layer_id in range(len(vectors)):
+            vectors[layer_id] = np.concatenate(vectors[layer_id])
+            targets[layer_id] = np.concatenate(targets[layer_id])
+
+        return vectors, targets, len(vectors)
 
 
 def sup_con(features, temperature=0.07, labels=None, mask=None):
