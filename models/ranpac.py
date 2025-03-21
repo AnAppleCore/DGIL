@@ -5,6 +5,7 @@ from torch import nn
 from torch.serialization import load
 from tqdm import tqdm
 from torch import optim
+from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from utils.inc_net import IncrementalNet,SimpleCosineIncrementalNet,MultiBranchCosineIncrementalNet,SimpleVitNet
@@ -25,6 +26,12 @@ class Learner(BaseLearner):
         self.min_lr = args['min_lr'] if args['min_lr'] is not None else 1e-8
         self.args = args
 
+        self.dot_epochs = args.get('dot_epochs', 0)
+        self._cur_domain = 0
+        self.cls_to_task_id = {}
+        self.cls_to_domain_id = {}
+        self.domain_id_to_cls = {}
+
     def after_task(self):
         self._known_classes = self._total_classes
 
@@ -38,6 +45,29 @@ class Learner(BaseLearner):
                 data = data.to(self._device)
                 label = label.to(self._device)
                 embedding = model.extract_vector(data)
+                if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
+                    fake_inps, fake_tgts = [], []
+                    for d_id, cid_list in self.domain_id_to_cls.items():
+                        ptp_inp = []
+                        num_sampled_pcid = 256//len(cid_list)
+                        for c_id in cid_list:
+                            cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
+                            cls_cov = self._class_covs_slca[c_id].to(self._device)
+                            m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+                            ptp_inp.append(m.sample(sample_shape=(num_sampled_pcid,)))
+                        ptp_inp = torch.cat(ptp_inp, dim=0)
+
+                        with torch.no_grad():
+                            fake_inp = self._network.domain_tsf(embedding, ptp_inp, ptp_inp)
+                            fake_tgt = torch.zeros_like(label) + label
+                        fake_inps.append(fake_inp)
+                        fake_tgts.append(fake_tgt.detach())
+
+                    fake_inps = torch.cat(fake_inps, dim=0)
+                    fake_tgts = torch.cat(fake_tgts, dim=0)
+                    embedding = torch.cat([embedding, fake_inps], dim=0)
+                    label = torch.cat([label, fake_tgts], dim=0)
+
                 embedding_list.append(embedding.cpu())
                 label_list.append(label.cpu())
         embedding_list = torch.cat(embedding_list, dim=0)
@@ -79,8 +109,20 @@ class Learner(BaseLearner):
     
     def incremental_train(self, data_manager):
         self._cur_task += 1
+        task_size = data_manager.get_task_size(self._cur_task)
         self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
         self._network.update_fc(self._total_classes)
+
+        try:
+            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+        except:
+            self._cur_domain = 0
+        for c_id in range(self._known_classes, self._total_classes):
+            self.cls_to_task_id[c_id] = self._cur_task
+            self.cls_to_domain_id[c_id] = self._cur_domain
+            if self._cur_domain not in self.domain_id_to_cls:
+                self.domain_id_to_cls[self._cur_domain] = []
+            self.domain_id_to_cls[self._cur_domain].append(c_id)
         logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
 
         train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train", )
@@ -126,6 +168,11 @@ class Learner(BaseLearner):
             pass
         if self._cur_task == 0 and self.args["use_RP"]:
             self.setup_RP()
+
+        self._compute_distributions(self.data_manager)
+        if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
+            self._stage2_domain_transformation()
+
         self.replace_fc(train_loader_for_protonet, self._network, None)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
@@ -163,3 +210,207 @@ class Learner(BaseLearner):
             prog_bar.set_description(info)
 
         logging.info(info)
+
+
+    def _compute_distributions(self, data_manager):
+        if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
+            ori_classes = self._class_means_slca.shape[0]
+            assert ori_classes==self._known_classes
+            new_class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+            new_class_means_slca[:self._known_classes] = self._class_means_slca
+            self._class_means_slca = new_class_means_slca
+            new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+            new_class_cov[:self._known_classes] = self._class_covs_slca
+            self._class_covs_slca = new_class_cov
+        else:
+            self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+            self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+
+        for class_idx in range(self._known_classes, self._total_classes):
+            data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
+                                                                  mode='test', ret_data=True)
+            idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            vectors, _ = self._extract_vectors(idx_loader)
+
+            # vectors = np.concatenate([vectors_aug, vectors])
+
+            class_mean = np.mean(vectors, axis=0)
+            # class_cov = np.cov(vectors.T)
+            class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T)+torch.eye(class_mean.shape[-1])*1e-4
+            self._class_means_slca[class_idx, :] = class_mean
+            self._class_covs_slca[class_idx, ...] = class_cov
+
+        logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
+
+
+    def _stage2_domain_transformation(self):
+        run_epochs = self.dot_epochs
+        crct_num = self._total_classes
+        if self._network.domain_clf is None:
+            self._network.reset_domain_tsf_clf(
+                nb_classes=512, num_domains=512
+            )
+        param_list = {}
+        for n, p in self._network.named_parameters():
+            if "domain" in n or "class" in n:
+                p.requires_grad = True
+                param_list[n] = p
+        network_params = [{'params': param_list.values(), 'lr': 0.01, 'weight_decay': self.weight_decay}]
+        optimizer = optim.SGD(network_params, lr=0.01, momentum=0.9, weight_decay=self.weight_decay)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=run_epochs)
+
+        self._network.to(self._device)
+        if len(self._multiple_gpus) > 1:
+            self._network = nn.DataParallel(self._network, self._multiple_gpus)
+
+        self._network.eval()
+        for epoch in range(run_epochs):
+            self._network.train()
+            losses = 0.
+            losses_cls, losses_dom = 0., 0.
+
+            sampled_data = []
+            sampled_label = []
+            sampled_domain_id = []
+            num_sampled_pcls = 256
+
+            for c_id in range(crct_num):
+                t_id = self.cls_to_task_id[c_id]
+                d_id = self.cls_to_domain_id[c_id]
+
+                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
+                cls_cov = self._class_covs_slca[c_id].to(self._device)
+                
+                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+
+                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+                sampled_data.append(sampled_data_single)                
+                sampled_label.extend([c_id]*num_sampled_pcls)
+                sampled_domain_id.extend([d_id]*num_sampled_pcls)
+
+            sampled_data = torch.cat(sampled_data, dim=0).float().to(self._device)
+            sampled_label = torch.tensor(sampled_label).long().to(self._device)
+            sampled_domain_id = torch.tensor(sampled_domain_id).long().to(self._device)
+
+            sf_indexes = torch.randperm(sampled_data.size(0))
+            inputs = sampled_data[sf_indexes]
+            targets = sampled_label[sf_indexes]
+            domain_id = sampled_domain_id[sf_indexes]
+
+            for _iter in range(crct_num):
+                inp = inputs[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+                tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+                did = domain_id[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+
+                ptp_inps = []
+                ptp_tgts = []
+                ptp_dids = []
+                fake_inps = []
+                fake_tgts = []
+                fake_dids = []
+
+                for d_id, cid_list in self.domain_id_to_cls.items():
+                    ptp_inp = []
+                    ptp_tgt = []
+                    ptp_did = []
+                    num_sampled_pcid = num_sampled_pcls//len(cid_list)
+                    for c_id in cid_list:
+                        cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
+                        cls_cov = self._class_covs_slca[c_id].to(self._device)
+                        m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+                        ptp_inp.append(m.sample(sample_shape=(num_sampled_pcid,)))
+                        ptp_tgt.extend([c_id]*num_sampled_pcid)
+                        ptp_did.extend([d_id]*num_sampled_pcid)
+
+                    ptp_inp = torch.cat(ptp_inp, dim=0).float().to(self._device)
+                    ptp_tgt = torch.tensor(ptp_tgt).long().to(self._device)
+                    ptp_did = torch.tensor(ptp_did).long().to(self._device)
+                    ptp_inps.append(ptp_inp)
+                    ptp_tgts.append(ptp_tgt)
+                    ptp_dids.append(ptp_did)
+
+                    fake_inp = self._network.domain_tsf(inp, ptp_inp, ptp_inp)
+                    fake_tgt = torch.zeros_like(tgt) + tgt
+                    fake_did = torch.zeros_like(did) + d_id
+                    fake_inps.append(fake_inp)
+                    fake_tgts.append(fake_tgt.detach())
+                    fake_dids.append(fake_did.detach())
+
+                fake_inps = torch.cat(fake_inps, dim=0)
+                fake_tgts = torch.cat(fake_tgts, dim=0)
+                fake_dids = torch.cat(fake_dids, dim=0)
+                ptp_inps = torch.cat(ptp_inps, dim=0)
+                ptp_tgts = torch.cat(ptp_tgts, dim=0)
+                ptp_dids = torch.cat(ptp_dids, dim=0)
+
+                all_inps = torch.cat([inp, ptp_inps, fake_inps], dim=0)
+                all_tgts = torch.cat([tgt, ptp_tgts, fake_tgts], dim=0)
+                all_dids = torch.cat([did, ptp_dids, fake_dids], dim=0)
+
+                all_class_outputs = self._network.class_clf(all_inps)
+                cls_loss = sup_con(features=all_class_outputs, labels=all_tgts)
+
+                all_domain_outputs = self._network.domain_clf(all_inps)
+                dom_loss = sup_con(features=all_domain_outputs, labels=all_dids)
+
+                loss = cls_loss + dom_loss
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                losses += loss.item()
+                losses_cls += cls_loss.item()
+                losses_dom += dom_loss.item()
+
+            scheduler.step()
+            info = 'DOT Task {} => Loss {:.3f}, Cls_loss {:.3f}, Dom_loss {:.3f}'.format(
+                self._cur_task, losses/self._total_classes, losses_cls/self._total_classes, losses_dom/self._total_classes)
+            logging.info(info)
+
+
+def sup_con(features, temperature=0.07, labels=None, mask=None):
+    features_norm = F.normalize(features, p=2, dim=1)
+    batch_size = features_norm.shape[0]
+    device = features_norm.device
+
+    if labels is not None and mask is not None:
+        raise ValueError('Cannot define both `labels` and `mask`')
+    elif labels is None and mask is None:
+        mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+    elif labels is not None:
+        labels = labels.contiguous().view(-1, 1)
+        if labels.shape[0] != batch_size:
+            raise ValueError('Num of labels does not match num of features')
+        mask = torch.eq(labels, labels.T).float().to(device)
+    else:
+        mask = mask.float().to(device)
+
+    # compute logits
+    anchor_dot_contrast = torch.div(
+        torch.matmul(features_norm, features_norm.T),
+        temperature)
+    # for numerical stability
+    logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+    logits = anchor_dot_contrast - logits_max.detach()
+    exp_logits = torch.exp(logits)
+
+    logits_mask = torch.ones_like(mask).to(device) - torch.eye(batch_size).to(device)
+    positives_mask = mask * logits_mask
+    negatives_mask = 1. - mask
+
+    num_positives_per_row = torch.sum(positives_mask, axis=1)
+    denominator = torch.sum(
+        exp_logits * negatives_mask, axis=1, keepdims=True) + torch.sum(
+        exp_logits * positives_mask, axis=1, keepdims=True)
+
+    log_probs = logits - torch.log(denominator)
+    if torch.any(torch.isnan(log_probs)):
+        raise ValueError("Log_prob has nan!")
+
+    log_probs = torch.sum(
+        log_probs * positives_mask, axis=1)[num_positives_per_row > 0] / num_positives_per_row[
+                    num_positives_per_row > 0]
+
+    # loss
+    loss = -log_probs
+    loss = loss.mean()
+    return loss

@@ -3,39 +3,89 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# class DomainTransformationModule(nn.Module):
+#     def __init__(self, feature_dim, num_heads=4):
+#         super().__init__()
+#         self.feature_dim = feature_dim
+#         self.num_heads = num_heads
+#         self.embedding = nn.Linear(feature_dim, feature_dim)
+#         self.attention = nn.MultiheadAttention(feature_dim, num_heads)
+#         self.residual_fc = nn.Linear(feature_dim, feature_dim)
+
+#     def reset(self):
+#         self.embedding = nn.Linear(self.feature_dim, self.feature_dim)
+#         self.attention = nn.MultiheadAttention(self.feature_dim, self.num_heads)
+#         self.residual_fc = nn.Linear(self.feature_dim, self.feature_dim)
+
+#     def forward(self, x, prototypes, noise_scale=None):
+#         # x: [batch_size, feature_dim] → [seq_len=1, batch_size, feature_dim]
+#         e_x = self.embedding(x).unsqueeze(0)  # [1, batch_size, feature_dim]
+        
+#         # prototypes: [num_prototypes, feature_dim] → [seq_len=num_prototypes, batch_size, feature_dim]
+#         e_p = self.embedding(prototypes)  # [num_prototypes, feature_dim]
+#         e_p = e_p.unsqueeze(1).expand(-1, x.size(0), -1)  # [num_prototypes, batch_size, feature_dim]
+
+#         attn_output, attn_weights = self.attention(
+#             query=e_x,       # [1, batch_size, feature_dim]
+#             key=e_p,         # [num_prototypes, batch_size, feature_dim]
+#             value=e_p        # [num_prototypes, batch_size, feature_dim]
+#         )
+#         attn_output = attn_output.squeeze(0)  # [batch_size, feature_dim]
+
+#         if noise_scale is not None:
+#             noise = noise_scale * torch.randn_like(attn_output)
+#             attn_output = attn_output + noise
+#         augmented_feature = F.relu(x + self.residual_fc(attn_output))
+#         return augmented_feature
+    
+
 class DomainTransformationModule(nn.Module):
     def __init__(self, feature_dim, num_heads=4):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_heads = num_heads
-        self.embedding = nn.Linear(feature_dim, feature_dim)
-        self.attention = nn.MultiheadAttention(feature_dim, num_heads)
-        self.residual_fc = nn.Linear(feature_dim, feature_dim)
+        self.reset()
 
     def reset(self):
-        self.embedding = nn.Linear(self.feature_dim, self.feature_dim)
+        self.pre_embed_norm = nn.LayerNorm(self.feature_dim)
+        # FIXME embedding layers may not be necessary
+        self.semantic_embed = nn.Linear(self.feature_dim, self.feature_dim)
+        self.domain_embed = nn.Linear(self.feature_dim, self.feature_dim)
         self.attention = nn.MultiheadAttention(self.feature_dim, self.num_heads)
-        self.residual_fc = nn.Linear(self.feature_dim, self.feature_dim)
+        self.post_attn_norm = nn.LayerNorm(self.feature_dim)
+        self.readout = nn.Linear(self.feature_dim, self.feature_dim)
+        self.act = nn.GELU()
 
-    def forward(self, x, prototypes, noise_scale=None):
+    def forward(self, x:torch.Tensor, k:torch.Tensor, v:torch.Tensor=None):
+        '''
+            x: input feature, final layer, size [batch_size, feature_dim]
+            k: inner layer prototype: [batch_size, num_layers, feature_dim]
+        '''
         # x: [batch_size, feature_dim] → [seq_len=1, batch_size, feature_dim]
-        e_x = self.embedding(x).unsqueeze(0)  # [1, batch_size, feature_dim]
-        
-        # prototypes: [num_prototypes, feature_dim] → [seq_len=num_prototypes, batch_size, feature_dim]
-        e_p = self.embedding(prototypes)  # [num_prototypes, feature_dim]
-        e_p = e_p.unsqueeze(1).expand(-1, x.size(0), -1)  # [num_prototypes, batch_size, feature_dim]
+        e_x = self.pre_embed_norm(x)
+        e_x = self.semantic_embed(e_x).unsqueeze(0)  # [1, batch_size, feature_dim]
+
+        # keys: [batch_size, num_keys, feature_dim] → [seq_len=num_keys, batch_size, feature_dim]
+        e_k = self.pre_embed_norm(k)
+        e_k = self.domain_embed(e_k).permute(1, 0, 2)  # [num_keys, batch_size, feature_dim]
+
+        # values: [batch_size, num_keys, feature_dim] → [seq_len=num_keys, batch_size, feature_dim]
+        if v is None:
+            e_v = e_k
+        else:
+            e_v = self.pre_embed_norm(v)
+            e_v = self.domain_embed(e_v).permute(1, 0, 2)
 
         attn_output, attn_weights = self.attention(
-            query=e_x,       # [1, batch_size, feature_dim]
-            key=e_p,         # [num_prototypes, batch_size, feature_dim]
-            value=e_p        # [num_prototypes, batch_size, feature_dim]
+            query= e_x,         # [1, batch_size, feature_dim]
+            key  = e_k,         # [num_keys, batch_size, feature_dim]
+            value= e_v          # [num_keys, batch_size, feature_dim]
         )
         attn_output = attn_output.squeeze(0)  # [batch_size, feature_dim]
+        attn_output = self.post_attn_norm(attn_output)
 
-        if noise_scale is not None:
-            noise = noise_scale * torch.randn_like(attn_output)
-            attn_output = attn_output + noise
-        augmented_feature = F.relu(x + self.residual_fc(attn_output))
+        augmented_feature = x + self.readout(attn_output)
+        augmented_feature = self.act(augmented_feature)
         return augmented_feature
     
 

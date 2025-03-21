@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from kornia.augmentation.auto import RandAugment, TrivialAugment
+from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from torch import nn, optim
 from torch.distributions.multivariate_normal import MultivariateNormal
@@ -38,6 +39,7 @@ class Learner(BaseLearner):
         self.save_before_ca = args.get('save_before_ca', False)
 
         self.dot_epochs = args.get('dot_epochs', 0)
+        self.domain_centorids = args.get('domain_centorids', 32)
 
         self.rand_aug = K.AugmentationSequential(RandAugment(n=2, m=10))
         self.trivial_aug = K.AugmentationSequential(TrivialAugment())
@@ -50,7 +52,8 @@ class Learner(BaseLearner):
         self.cls_to_task_id = {}
         self.cls_to_domain_id = {}
         self.domain_id_to_cls = {}
-        self.domain_distributions = {}
+        self.prototypes = None
+        self.prototypes_domain_id = None
 
         self.tsne_visualize = args.get('tsne_visualize', False)
 
@@ -236,49 +239,19 @@ class Learner(BaseLearner):
                 tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
                 did = domain_id[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
 
-                ptp_inps = []
-                ptp_tgts = []
-                ptp_dids = []
-                fake_inps = []
-                fake_tgts = []
-                fake_dids = []
+                ptp_id = np.random.choice(
+                    len(self.prototypes), size=num_sampled_pcls, replace=True
+                )
+                ptp_inps = self.prototypes[ptp_id]
+                ptp_dids = self.prototypes_domain_id[ptp_id]
+                ptp_inps = torch.tensor(ptp_inps).float().to(self._device)
+                ptp_dids = torch.tensor(ptp_dids).long().to(self._device)
 
-                for d_id, cid_list in self.domain_id_to_cls.items():
-                    ptp_inp = []
-                    ptp_tgt = []
-                    ptp_did = []
-                    num_sampled_pcid = num_sampled_pcls//len(cid_list)
-                    for c_id in cid_list:
-                        cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
-                        cls_cov = self._class_covs_slca[c_id].to(self._device)
-                        m = MultivariateNormal(cls_mean.float(), cls_cov.float())
-                        ptp_inp.append(m.sample(sample_shape=(num_sampled_pcid,)))
-                        ptp_tgt.extend([c_id]*num_sampled_pcid)
-                        ptp_did.extend([d_id]*num_sampled_pcid)
-                    ptp_inp = torch.cat(ptp_inp, dim=0).float().to(self._device)
-                    ptp_tgt = torch.tensor(ptp_tgt).long().to(self._device)
-                    ptp_did = torch.tensor(ptp_did).long().to(self._device)
-                    ptp_inps.append(ptp_inp)
-                    ptp_tgts.append(ptp_tgt)
-                    ptp_dids.append(ptp_did)
+                fake_inps = self._network.domain_tsf(inp, ptp_inps)
 
-                    fake_inp = self._network.domain_tsf(inp, ptp_inp)
-                    fake_tgt = torch.zeros_like(tgt) + tgt
-                    fake_did = torch.zeros_like(did) + d_id
-                    fake_inps.append(fake_inp)
-                    fake_tgts.append(fake_tgt.detach())
-                    fake_dids.append(fake_did.detach())
-
-                fake_inps = torch.cat(fake_inps, dim=0)
-                fake_tgts = torch.cat(fake_tgts, dim=0)
-                fake_dids = torch.cat(fake_dids, dim=0)
-                ptp_inps = torch.cat(ptp_inps, dim=0)
-                ptp_tgts = torch.cat(ptp_tgts, dim=0)
-                ptp_dids = torch.cat(ptp_dids, dim=0)
-
-                all_inps = torch.cat([inp, ptp_inps, fake_inps], dim=0)
-                all_tgts = torch.cat([tgt, ptp_tgts, fake_tgts], dim=0)
-                all_dids = torch.cat([did, ptp_dids, fake_dids], dim=0)
+                all_inps = torch.cat([inp, fake_inps], dim=0)
+                all_tgts = torch.cat([tgt, tgt], dim=0)
+                all_dids = torch.cat([did, ptp_dids], dim=0)
 
                 all_class_outputs = self._network.class_clf(all_inps)
                 cls_loss = sup_con(features=all_class_outputs, labels=all_tgts)
@@ -294,60 +267,6 @@ class Learner(BaseLearner):
                 losses += loss.item()
                 losses_cls += cls_loss.item()
                 losses_dom += dom_loss.item()
-
-                # tsne visualization
-                if epoch == run_epochs-1 and _iter == crct_num-1 and self.tsne_visualize:
-                    if not hasattr(self, 'img_folder'):
-                        self.img_folder = f"./imgs/{time.strftime('%Y%m%d_%H%M%S')}_{self.tsne_visualize}"
-                        os.makedirs(self.img_folder, exist_ok=True)
-                    with torch.no_grad():
-                        tsne = TSNE(n_components=2)
-                        vis_features = tsne.fit_transform(all_inps.cpu().numpy())
-                        cmap = plt.get_cmap('tab10')
-                        
-                        # paint by domain
-                        domain_norm = plt.Normalize(vmin=0, vmax=self.data_manager.num_domains-1)
-                        plt.figure(figsize=(8, 8))
-                        plt.scatter(
-                            vis_features[:len(inp), 0], vis_features[:len(inp), 1], 
-                            c=cmap(domain_norm(did.cpu().numpy())), label='real', s=10, marker='s', 
-                        )
-                        plt.scatter(
-                            vis_features[len(inp):len(inp)+len(ptp_inps), 0], vis_features[len(inp):len(inp)+len(ptp_inps), 1], 
-                            c=cmap(domain_norm(ptp_dids.cpu().numpy())), label='ptp', s=10, marker='o', 
-                        )
-                        plt.scatter(
-                            vis_features[len(inp)+len(ptp_inps):, 0], vis_features[len(inp)+len(ptp_inps):, 1], 
-                            c=cmap(domain_norm(fake_dids.cpu().numpy())), label='fake', s=10, marker='^', 
-                        )
-
-                        plt.title('Task {}, Domain Transformation Epoch {} Domain-Wise'.format(self._cur_task, epoch+1))
-                        plt.legend()
-                        plt.tight_layout()
-                        plt.savefig(f'{self.img_folder}/feat_vis_task{self._cur_task}_epoch{epoch+1}_domain.png')
-
-                        # paint by task id
-                        np_all_tgts = all_tgts.cpu().numpy()
-                        np_all_tsks = np.array([self.cls_to_task_id[t] for t in np_all_tgts])
-                        task_norm = plt.Normalize(vmin=0, vmax=self.data_manager.nb_tasks-1)
-                        plt.figure(figsize=(8, 8))
-                        plt.scatter(
-                            vis_features[:len(inp), 0], vis_features[:len(inp), 1], 
-                            c=cmap(task_norm(np_all_tsks[:len(inp)])), label='real', s=10, marker='s', 
-                        )
-                        plt.scatter(
-                            vis_features[len(inp):len(inp)+len(ptp_inps), 0], vis_features[len(inp):len(inp)+len(ptp_inps), 1], 
-                            c=cmap(task_norm(np_all_tsks[len(inp):len(inp)+len(ptp_inps)])), label='ptp', s=10, marker='o', 
-                        )
-                        plt.scatter(
-                            vis_features[len(inp)+len(ptp_inps):, 0], vis_features[len(inp)+len(ptp_inps):, 1], 
-                            c=cmap(task_norm(np_all_tsks[len(inp)+len(ptp_inps):])), label='fake', s=10, marker='^', 
-                        )
-
-                        plt.title('Task {}, Domain Transformation Epoch {} Task-Wise'.format(self._cur_task, epoch+1))
-                        plt.legend()
-                        plt.tight_layout()
-                        plt.savefig(f'{self.img_folder}/feat_vis_task{self._cur_task}_epoch{epoch+1}_task.png')
 
             scheduler.step()
 
@@ -408,19 +327,18 @@ class Learner(BaseLearner):
                 tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
 
                 if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
-                    fake_inps = []
-                    fake_tgts = []
-                    for d_id, d_dist in self.domain_distributions.items():
-                        with torch.no_grad():
-                            fake_inp = self._network.domain_tsf(inp, d_dist.generate(64))
-                            fake_tgt = torch.zeros_like(tgt) + tgt
-                        fake_inps.append(fake_inp)
-                        fake_tgts.append(fake_tgt.detach())
+                    ptp_id = np.random.choice(
+                        len(self.prototypes), size=num_sampled_pcls, replace=True
+                    )
+                    ptp_inps = self.prototypes[ptp_id]
+                    ptp_dids = self.prototypes_domain_id[ptp_id]
+                    ptp_inps = torch.tensor(ptp_inps).float().to(self._device)
+                    ptp_dids = torch.tensor(ptp_dids).long().to(self._device)
 
-                    fake_inps = torch.cat(fake_inps, dim=0)
-                    fake_tgts = torch.cat(fake_tgts, dim=0)
+                    fake_inps = self._network.domain_tsf(inp, ptp_inps)
+
                     inp = torch.cat([inp, fake_inps], dim=0)
-                    tgt = torch.cat([tgt, fake_tgts], dim=0)
+                    tgt = torch.cat([tgt, tgt], dim=0)
 
                 outputs = self._network(inp, bcb_no_grad=True, fc_only=True)
                 logits = outputs['logits']
@@ -470,15 +388,16 @@ class Learner(BaseLearner):
             self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
             self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
         
-        all_vectors = []
+        all_features = []
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
                                                                   mode='test', ret_data=True)
             idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
-            vectors, _ = self._extract_vectors(idx_loader)
-            all_vectors.append(vectors)
-
-            # vectors = np.concatenate([vectors_aug, vectors])
+            if self.dot_epochs > 0:
+                vectors, features, _ = self._extract_layerwise_vectors(idx_loader)
+                all_features.append(features)
+            else:
+                vectors, _ = self._extract_vectors(idx_loader)
 
             class_mean = np.mean(vectors, axis=0)
             # class_cov = np.cov(vectors.T)
@@ -488,47 +407,53 @@ class Learner(BaseLearner):
 
         logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
 
-        all_vectors = np.concatenate(all_vectors, axis=0)
-        all_vectors = torch.from_numpy(all_vectors).to(self._device)
-        if self._cur_domain not in self.domain_distributions:
-            new_domain_dist = MultiCentroidDist(
-                n_centroids=32, feature_dim=self.feature_dim, device=self._device
-            )
-            new_domain_dist.compute_centroids(all_vectors)
-            self.domain_distributions[self._cur_domain] = new_domain_dist
-        else:
-            old_domain_dist: MultiCentroidDist = self.domain_distributions[self._cur_domain]
-            old_domain_dist.update(all_vectors)
-            self.domain_distributions[self._cur_domain] = old_domain_dist
+        if self.dot_epochs > 0:
+            all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
+            all_features_mean = np.mean(all_features, axis=1) # [num_samples, feature_dim]
+            kmeans = KMeans(n_clusters=self.domain_centorids).fit(all_features_mean)
+            feature_centers = kmeans.cluster_centers_
+            # find closest prototype for each center
+            prototype_idx = []
+            all_idx = np.arange(all_features_mean.shape[0])
+            for i in range(self.domain_centorids):
+                i_mask = (kmeans.labels_ == i)
+                i_idx = all_idx[i_mask]
+                dist = np.linalg.norm(all_features_mean[i_mask] - feature_centers[i], axis=1)
+                prototype_idx.append(i_idx[np.argmin(dist)])
 
-        logging.info('Compute domain distribution for domain {}'.format(self._cur_domain))
+            if self.prototypes is None:
+                self.prototypes = all_features[prototype_idx]
+                self.prototypes_domain_id = np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+            else:
+                self.prototypes = np.concatenate([self.prototypes, all_features[prototype_idx]], axis=0)
+                self.prototypes_domain_id = np.concatenate([
+                    self.prototypes_domain_id, np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+                ], axis=0)
+
+        logging.info('Compute domain prototypes for domain {}'.format(self._cur_domain))
 
     
     def _extract_layerwise_vectors(self, loader, pool=True):
         self._network.eval()
-        vectors, targets = {}, {}
+        vectors, features, targets = [], [], []
 
         with torch.no_grad():
             for _, _inputs, _targets in loader:
                 _targets = _targets.numpy()
                 if isinstance(self._network, nn.DataParallel):
-                    _vectors = self._network.module.extract_layerwise_vector(_inputs.to(self._device), pool=pool)
+                    _vectors, _features = self._network.module.extract_layerwise_vector(_inputs.to(self._device))
                 else:
-                    _vectors = self._network.extract_layerwise_vector(_inputs.to(self._device), pool=pool)
+                    _vectors, _features = self._network.extract_layerwise_vector(_inputs.to(self._device))
                 
-                if len(vectors.keys()) == 0:
-                    for layer_id in range(len(_vectors)):
-                        vectors[layer_id] = []
-                        targets[layer_id] = []
-                for layer_id in range(len(_vectors)):
-                    vectors[layer_id].append(_vectors[layer_id])
-                    targets[layer_id].append(_targets)
+                vectors.append(_vectors)
+                features.append(_features)
+                targets.append(_targets)
 
-        for layer_id in range(len(vectors)):
-            vectors[layer_id] = np.concatenate(vectors[layer_id])
-            targets[layer_id] = np.concatenate(targets[layer_id])
+        vectors = np.concatenate(vectors)
+        features = np.concatenate(features)
+        targets = np.concatenate(targets)
 
-        return vectors, targets, len(vectors)
+        return vectors, features, targets
 
 
 def sup_con(features, temperature=0.07, labels=None, mask=None):

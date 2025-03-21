@@ -589,6 +589,14 @@ class SimpleVitNet(BaseNet):
         # for RanPAC
         self.W_rand = None
         self.RP_dim = None
+        self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
+        self.class_clf = None
+        self.domain_clf = None
+
+    def reset_domain_tsf_clf(self, nb_classes, num_domains):
+        self.domain_tsf.reset()
+        self.class_clf = nn.Linear(self.feature_dim, nb_classes)
+        self.domain_clf = nn.Linear(self.feature_dim, num_domains)
 
     def update_fc(self, nb_classes, nextperiod_initialization=None):
         if self.RP_dim is not None:
@@ -1255,17 +1263,12 @@ class SLCANet(BaseNet):
         self.class_clf = None
         self.domain_clf = None
 
-
-    def extract_layerwise_vector(self, x, pool=True):
+    def extract_layerwise_vector(self, x):
         with torch.no_grad():
-            features = self.backbone(x, layer_feat=True)['features']
-        for f_i in range(len(features)):
-            if pool:
-                features[f_i] = features[f_i].mean(1).cpu().numpy() 
-            else:
-                features[f_i] = features[f_i][:, 0].cpu().numpy() 
-        return features
-
+            output = self.backbone(x, layer_feat=True)
+            pre_logits = output['pre_logits'].cpu().numpy()
+            features = output['features'].cpu().numpy()
+        return pre_logits, features
 
     def update_fc(self, nb_classes, freeze_old=True):
         if self.fc is None:
