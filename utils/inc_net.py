@@ -3,6 +3,7 @@ import logging
 
 import timm
 import torch
+import numpy as np
 from timm.models.layers import Mlp
 from torch import nn
 
@@ -24,6 +25,43 @@ def get_backbone(args, pretrained=False):
         model = timm.create_model("vit_base_patch16_224_in21k",pretrained=True, num_classes=0)
         model.out_dim = 768
         return model.eval()
+
+    # DoT
+    elif '_dot' in name:
+        if args["model_name"] == "dot_slca":
+            from backbone import vit_dot_slca
+            if name == "pretrained_vit_b16_224_dot" or name == "vit_base_patch16_224_dot":
+                model = timm.create_model("vit_base_patch16_224_dot",pretrained=True, num_classes=0)
+                model.out_dim = 768
+                return model.eval()
+            elif name == "pretrained_vit_b16_224_in21k_dot" or name == "vit_base_patch16_224_in21k_dot":
+                model = timm.create_model("vit_base_patch16_224_in21k_dot",pretrained=True, num_classes=0)
+                model.out_dim = 768
+                return model.eval()
+        elif args["model_name"] == "dot_l2p":
+            from backbone import vit_dot_l2p
+            model = timm.create_model(
+                args["backbone_type"],
+                pretrained=args["pretrained"],
+                num_classes=args["nb_classes"],
+                drop_rate=args["drop"],
+                drop_path_rate=args["drop_path"],
+                drop_block_rate=None,
+                prompt_length=args["length"],
+                embedding_key=args["embedding_key"],
+                prompt_init=args["prompt_key_init"],
+                prompt_pool=args["prompt_pool"],
+                prompt_key=args["prompt_key"],
+                pool_size=args["size"],
+                top_k=args["top_k"],
+                batchwise_prompt=args["batchwise_prompt"],
+                prompt_key_init=args["prompt_key_init"],
+                head_type=args["head_type"],
+                use_prompt_mask=args["use_prompt_mask"],
+            )
+            return model
+        else:
+            raise NotImplementedError("Unsupported model name for DoT")
 
     elif '_memo' in name:
         if args["model_name"] == "memo":
@@ -165,32 +203,6 @@ def get_backbone(args, pretrained=False):
         if args["model_name"] == "hide_prompt":
             from backbone import vit_hide_prompt
             #TODO
-            return model
-        else:
-            raise NotImplementedError("Inconsistent model name and model type")
-    # DoT
-    elif '_dot' in name:
-        if args["model_name"] == "dot":
-            from backbone import vit_dot
-            model = timm.create_model(
-                args["backbone_type"],
-                pretrained=args["pretrained"],
-                num_classes=args["nb_classes"],
-                drop_rate=args["drop"],
-                drop_path_rate=args["drop_path"],
-                drop_block_rate=None,
-                prompt_length=args["length"],
-                embedding_key=args["embedding_key"],
-                prompt_init=args["prompt_key_init"],
-                prompt_pool=args["prompt_pool"],
-                prompt_key=args["prompt_key"],
-                pool_size=args["size"],
-                top_k=args["top_k"],
-                batchwise_prompt=args["batchwise_prompt"],
-                prompt_key_init=args["prompt_key_init"],
-                head_type=args["head_type"],
-                use_prompt_mask=args["use_prompt_mask"],
-            )
             return model
         else:
             raise NotImplementedError("Inconsistent model name and model type")
@@ -633,54 +645,24 @@ class SimpleVitNet(BaseNet):
 
 # l2p and dualprompt
 class PromptVitNet(nn.Module):
-    def __init__(self, args, pretrained):
+    def __init__(self, args:dict, pretrained):
         super(PromptVitNet, self).__init__()
         self.backbone = get_backbone(args, pretrained)
         if args["get_original_backbone"]:
             self.original_backbone = self.get_original_backbone(args)
         else:
             self.original_backbone = None
-            
-    def get_original_backbone(self, args):
-        return timm.create_model(
-            args["backbone_type"],
-            pretrained=args["pretrained"],
-            num_classes=args["nb_classes"],
-            drop_rate=args["drop"],
-            drop_path_rate=args["drop_path"],
-            drop_block_rate=None,
-        ).eval()
 
-    def forward(self, x, task_id=-1, train=False):
-        with torch.no_grad():
-            if self.original_backbone is not None:
-                cls_features = self.original_backbone(x)['pre_logits']
-            else:
-                cls_features = None
-
-        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
-        return x
-
-# dot
-class DoTPromptVitNet(nn.Module):
-    def __init__(self, args:dict, pretrained):
-        super(DoTPromptVitNet, self).__init__()
-        self.backbone = get_backbone(args, pretrained)
-        if args["get_original_backbone"]:
-            self.original_backbone = self.get_original_backbone(args)
-        else:
-            self.original_backbone = None
-
-        self.embed_dim = self.backbone.embed_dim
+        self.feature_dim = self.backbone.embed_dim
+        self.rec_head = None
         if args.get("dot_epochs", 0) > 0:
-            self.domain_tsf = DomainTransformationModule(self.embed_dim, num_heads=4)
+            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
             self.class_clf = None
             self.domain_clf = None
-        self.rec_head = None
 
     def update_head(self, task_size, freeze_old=True):
         if self.rec_head is None:
-            self.rec_head = SimpleContinualLinear(self.embed_dim, task_size)
+            self.rec_head = SimpleContinualLinear(self.feature_dim, task_size)
         else:
             self.rec_head.update(task_size, freeze_old=freeze_old)
 
@@ -692,8 +674,8 @@ class DoTPromptVitNet(nn.Module):
 
     def reset_domain_tsf_clf(self, cls_feat_dim, dom_feat_dim):
         self.domain_tsf.reset()
-        self.class_clf = nn.Linear(self.embed_dim, cls_feat_dim)
-        self.domain_clf = nn.Linear(self.embed_dim, dom_feat_dim)
+        self.class_clf = nn.Linear(self.feature_dim, cls_feat_dim)
+        self.domain_clf = nn.Linear(self.feature_dim, dom_feat_dim)
 
     def get_original_backbone(self, args):
         return timm.create_model(
@@ -705,10 +687,22 @@ class DoTPromptVitNet(nn.Module):
             drop_block_rate=None,
         ).eval()
 
-    def forward(self, x:torch.Tensor, task_id=-1, train=False, shuffle_tokens=False, head_only=False) -> dict:
+    def extract_layerwise_vector(self, x, task_id=-1, train=False):
+        with torch.no_grad():
+            output = self.forward(x, task_id=task_id, train=train)
+            pre_logits = output['pre_logits'].cpu().numpy()
+            features = output['features'].cpu().numpy()
+        return pre_logits, features
 
-        if head_only:
-            output: dict = self.rec_head(x)
+    def extract_vector(self, x, task_id=-1, train=False):
+        with torch.no_grad():
+            output = self.forward(x, task_id=task_id, train=train)
+            pre_logits = output['pre_logits'].cpu().numpy()
+        return pre_logits
+
+    def forward(self, x, task_id=-1, train=False, head_only=False):
+        if head_only and self.rec_head is not None:
+            output:dict = self.rec_head(x)
             output.update({'pre_logits': x})
             return output
 
@@ -718,20 +712,11 @@ class DoTPromptVitNet(nn.Module):
             else:
                 cls_features = None
 
-        x: dict = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
-        logits= self.rec_head(x['pre_logits'])['logits']
-        x.update({'logits': logits, 'raw_features': cls_features})
+        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train)
+        if self.rec_head is not None:
+            logits = self.rec_head(x['pre_logits'])['logits']
+            x.update({'logits': logits})
         return x
-    
-    def extract_vector(self, x, task_id=-1, train=False, shuffle_tokens=False):
-        with torch.no_grad():
-            if self.original_backbone is not None:
-                cls_features = self.original_backbone(x)['pre_logits']
-            else:
-                cls_features = None
-
-        x = self.backbone(x, task_id=task_id, cls_features=cls_features, train=train, shuffle_tokens=shuffle_tokens)
-        return x['pre_logits']
 
 # sprompt
 class SPromptVitNet(nn.Module):
@@ -1255,13 +1240,14 @@ class EaseNet(BaseNet):
 
 class SLCANet(BaseNet):
 
-    def __init__(self, args, pretrained=True, fc_with_ln=False):
+    def __init__(self, args:dict, pretrained=True, fc_with_ln=False):
         super().__init__(args, pretrained)
         self.old_fc = None
         self.fc_with_ln = fc_with_ln
-        self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
-        self.class_clf = None
-        self.domain_clf = None
+        if args.get('dot_epochs', 0) > 0:
+            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
+            self.class_clf = None
+            self.domain_clf = None
 
     def extract_layerwise_vector(self, x):
         with torch.no_grad():
@@ -1305,7 +1291,7 @@ class SLCANet(BaseNet):
         else:
             x = self.backbone(x)
         out = self.fc(x)
-        out.update({"features": x})
+        out.update({"pre_logits": x})
 
         return out
 
