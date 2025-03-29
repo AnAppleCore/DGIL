@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL_e2_dot10_sup",
+    "prefix": "DGIL_dot_sup0.1_dom1",
     "dataset": "officehome",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -7,20 +7,23 @@
     "shuffle": true,
     "init_cls": 13,
     "increment": 13,
-    "model_name": "slca",
+    "model_name": "dot_slca",
     "model_postfix": "20e",
-    "backbone_type": "vit_base_patch16_224",
+    "backbone_type": "vit_base_patch16_224_dot",
     "device": [
         "0"
     ],
     "seed": [
-        1993
+        1993,
+        1994,
+        1995,
+        1996
     ],
     "lrate": 0.01,
     "weight_decay": 0.0005,
     "batch_size": 64,
     "lrate_decay": 0.1,
-    "epochs": 2,
+    "epochs": 20,
     "ca_epochs": 3,
     "ca_with_logit_norm": 0.1,
     "milestones": [
@@ -31,5 +34,7 @@
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "dot_epochs": 10
+    "dot_epochs": 10,
+    "orth_loss_weight": 0.1,
+    "dom_loss_weight": 1
 }

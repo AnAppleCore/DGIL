@@ -1,20 +1,20 @@
 {
-    "prefix": "DGIL",
-    "dataset": "imageclef",
+    "prefix": "DGIL_dot",
+    "dataset": "digitsdg",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
     "init_cls": 2,
     "increment": 2,
-    "model_name": "dot",
-    "backbone_type": "vit_base_patch16_224_dot",
+    "model_name": "dot_l2p",
+    "backbone_type": "vit_base_patch16_224_dot_l2p",
     "get_original_backbone": true,
     "device": [
         "0"
     ],
     "seed": [
-        1993
+        1993, 1994, 1995, 1996
     ],
     "tuned_epoch": 5,
     "init_lr": 0.001875,
@@ -55,5 +55,7 @@
     "enable_dgil": true,
     "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": false
+    "multi_domain_base_task": false,
+    "dot_epochs": 10,
+    "ca_epochs": 3
 }

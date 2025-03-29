@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL_e20_dot10_ptp",
+    "prefix": "DGIL_dot_supcon0.1_dom1",
     "dataset": "domainnet",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -7,29 +7,34 @@
     "shuffle": true,
     "init_cls": 35,
     "increment": 35,
-    "model_name": "slca",
-    "model_postfix": "20e",
-    "backbone_type": "vit_base_patch16_224",
+    "model_name": "dot_slca",
+    "model_postfix": "50e",
+    "backbone_type": "vit_base_patch16_224_dot",
     "device": [
         "0"
     ],
     "seed": [
-        1993, 1994, 1995, 1996
+        1993,
+        1994,
+        1995,
+        1996
     ],
     "lrate": 0.01,
     "weight_decay": 0.0005,
-    "batch_size": 64,
     "lrate_decay": 0.1,
-    "epochs": 20,
+    "batch_size": 64,
+    "epochs": 5,
     "ca_epochs": 3,
     "ca_with_logit_norm": 0.1,
     "milestones": [
-        18
+        40
     ],
     "print_forget": true,
     "enable_dgil": true,
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "dot_epochs": 10
+    "dot_epochs": 10,
+    "orth_loss_weight": 0.1,
+    "dom_loss_weight": 1
 }

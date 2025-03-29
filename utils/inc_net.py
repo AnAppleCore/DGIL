@@ -656,7 +656,8 @@ class PromptVitNet(nn.Module):
         self.feature_dim = self.backbone.embed_dim
         self.rec_head = None
         if args.get("dot_epochs", 0) > 0:
-            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
+            num_heads = args.get("num_heads", 4)
+            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=num_heads)
             self.class_clf = None
             self.domain_clf = None
 

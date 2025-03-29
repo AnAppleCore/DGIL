@@ -1,20 +1,20 @@
 {
-    "prefix": "DGIL_l2p_ca3",
-    "dataset": "officehome",
+    "prefix": "DGIL_dot_orth0.1_dom1",
+    "dataset": "core50",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 13,
-    "increment": 13,
-    "model_name": "dot",
-    "backbone_type": "vit_base_patch16_224_dot",
+    "init_cls": 5,
+    "increment": 5,
+    "model_name": "dot_l2p",
+    "backbone_type": "vit_base_patch16_224_dot_l2p",
     "get_original_backbone": true,
     "device": [
         "0"
     ],
     "seed": [
-        1993
+        1993, 1994, 1995, 1996
     ],
     "tuned_epoch": 5,
     "init_lr": 0.001875,
@@ -56,5 +56,8 @@
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "ca_epochs": 3
+    "dot_epochs": 10,
+    "ca_epochs": 3,
+    "orth_loss_weight": 0.1,
+    "dom_loss_weight": 1
 }
