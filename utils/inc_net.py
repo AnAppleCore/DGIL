@@ -1245,7 +1245,8 @@ class SLCANet(BaseNet):
         self.old_fc = None
         self.fc_with_ln = fc_with_ln
         if args.get('dot_epochs', 0) > 0:
-            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=4)
+            num_heads = args.get('num_heads', 4)
+            self.domain_tsf = DomainTransformationModule(self.feature_dim, num_heads=num_heads)
             self.class_clf = None
             self.domain_clf = None
 

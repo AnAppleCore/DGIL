@@ -1,15 +1,16 @@
 import logging
+
 import numpy as np
 import torch
 from sklearn.cluster import KMeans
-from torch import nn
-from tqdm import tqdm
-from torch import optim
+from torch import nn, optim
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
-from utils.inc_net import PromptVitNet
+from tqdm import tqdm
+
 from models.base import BaseLearner
+from utils.inc_net import PromptVitNet
 from utils.losses import sup_con
 from utils.toolkit import tensor2numpy
 
@@ -30,7 +31,10 @@ class Learner(BaseLearner):
 
         self.dot_epochs = args.get("dot_epochs", 0)
         self.dot_lr = args.get("dot_lr", 0.001)
-        self.domain_centorids = args.get('domain_centorids', 32)
+        self.domain_centroids = args.get('domain_centroids', 32)
+        self.dom_loss_weight = args.get('dom_loss_weight', 1.0)
+
+        self.orth_loss_weight = args.get('orth_loss_weight', 0.0)
 
         self.ca_epochs = args.get("ca_epochs", 3 if self.dot_epochs > 0 else 0)
         self.ca_lr = args.get("ca_lr", 0.001)
@@ -211,6 +215,7 @@ class Learner(BaseLearner):
             self._network.original_backbone.eval()
 
             losses = 0.0
+            losses_orth = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
@@ -218,10 +223,17 @@ class Learner(BaseLearner):
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
                 logits[:, :self._known_classes] = float('-inf')
+                features = output['pre_logits']
 
                 loss = F.cross_entropy(logits, targets.long())
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
                     loss = loss - self.args["pull_constraint_coeff"] * output['reduce_sim']
+
+                if self.orth_loss_weight > 0:
+                    # loss_orth = self._compute_orth_loss(features)
+                    loss_orth = self._compute_orth_loss(features, targets)
+                    loss += self.orth_loss_weight * loss_orth
+                    losses_orth += loss_orth.item()
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -238,20 +250,22 @@ class Learner(BaseLearner):
 
             if (epoch + 1) % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.args['tuned_epoch'],
                     losses / len(train_loader),
+                    losses_orth / len(train_loader),
                     train_acc,
                     test_acc,
                 )
             else:
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.args['tuned_epoch'],
                     losses / len(train_loader),
+                    losses_orth / len(train_loader),
                     train_acc,
                 )
             prog_bar.set_description(info)
@@ -294,12 +308,12 @@ class Learner(BaseLearner):
         if self.dot_epochs > 0:
             all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
             all_features_mean = np.mean(all_features, axis=1) # [num_samples, feature_dim]
-            kmeans = KMeans(n_clusters=self.domain_centorids).fit(all_features_mean)
+            kmeans = KMeans(n_clusters=self.domain_centroids).fit(all_features_mean)
             feature_centers = kmeans.cluster_centers_
             # find closest prototype for each center
             prototype_idx = []
             all_idx = np.arange(all_features_mean.shape[0])
-            for i in range(self.domain_centorids):
+            for i in range(self.domain_centroids):
                 i_mask = (kmeans.labels_ == i)
                 i_idx = all_idx[i_mask]
                 dist = np.linalg.norm(all_features_mean[i_mask] - feature_centers[i], axis=1)
@@ -307,11 +321,11 @@ class Learner(BaseLearner):
 
             if self.prototypes is None:
                 self.prototypes = all_features[prototype_idx]
-                self.prototypes_domain_id = np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+                self.prototypes_domain_id = np.zeros(self.domain_centroids, dtype=np.int32) + self._cur_domain
             else:
                 self.prototypes = np.concatenate([self.prototypes, all_features[prototype_idx]], axis=0)
                 self.prototypes_domain_id = np.concatenate([
-                    self.prototypes_domain_id, np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+                    self.prototypes_domain_id, np.zeros(self.domain_centroids, dtype=np.int32) + self._cur_domain
                 ], axis=0)
 
         logging.info('Compute domain prototypes for domain {}'.format(self._cur_domain))
@@ -445,7 +459,7 @@ class Learner(BaseLearner):
                 all_domain_outputs = self._network.domain_clf(all_inps)
                 dom_loss = sup_con(features=all_domain_outputs, labels=all_dids)
 
-                loss = cls_loss + dom_loss
+                loss = cls_loss + dom_loss * self.dom_loss_weight
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -586,3 +600,6 @@ class Learner(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+
+    def _compute_orth_loss(self, features, targets):
+        return sup_con(features=features, labels=targets)

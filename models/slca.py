@@ -1,12 +1,7 @@
 import logging
-import os
-import time
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sklearn.cluster import KMeans
-from sklearn.manifold import TSNE
 from torch import nn, optim
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
@@ -15,7 +10,6 @@ from tqdm import tqdm
 
 from models.base import BaseLearner
 from utils.inc_net import SLCANet
-from utils.losses import sup_con
 
 num_workers = 8
 
@@ -36,9 +30,6 @@ class Learner(BaseLearner):
         self.logit_norm = args.get('ca_with_logit_norm', None)
         self.save_before_ca = args.get('save_before_ca', False)
 
-        self.dot_epochs = args.get('dot_epochs', 0)
-        self.domain_centorids = args.get('domain_centorids', 32)
-
         self.args = args
         self.seed = args['seed']
         self.task_sizes = []
@@ -47,10 +38,6 @@ class Learner(BaseLearner):
         self.cls_to_task_id = {}
         self.cls_to_domain_id = {}
         self.domain_id_to_cls = {}
-        self.prototypes = None
-        self.prototypes_domain_id = None
-
-        self.tsne_visualize = args.get('tsne_visualize', False)
 
     def after_task(self):
         self._known_classes = self._total_classes
@@ -100,11 +87,8 @@ class Learner(BaseLearner):
             # self.save_checkpoint(self.log_path+'/'+self.model_prefix+'_seed{}_before_ca'.format(self.seed), head_only=self.fix_bcb)
         
         self._compute_distributions(data_manager)
-        if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
-            self._stage2_domain_transformation()
         if self._cur_task > 0 and self.ca_epochs > 0:
-            self._stage3_compact_classifier()
-        
+            self._stage2_compact_classifier()
 
     def _run(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.epochs))
@@ -175,102 +159,7 @@ class Learner(BaseLearner):
         self._run(train_loader, test_loader, optimizer, scheduler)
 
 
-    def _stage2_domain_transformation(self):
-        run_epochs = self.dot_epochs
-        crct_num = self._total_classes
-        self._network.reset_domain_tsf_clf(
-            # nb_classes=self._total_classes, num_domains=self.data_manager.num_domains
-            nb_classes=512, num_domains=512
-        )
-        param_list = {}
-        for n, p in self._network.named_parameters():
-            if "domain" in n or "class" in n:
-                p.requires_grad = True
-                param_list[n] = p
-        # logging.info(f"DoT trainnable params: {param_list.keys()}")
-        network_params = [{'params': param_list.values(), 'lr': self.lrate, 'weight_decay': self.weight_decay}]
-        optimizer = optim.SGD(network_params, lr=self.lrate, momentum=0.9, weight_decay=self.weight_decay)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=run_epochs)
-
-        self._network.to(self._device)
-        if len(self._multiple_gpus) > 1:
-            self._network = nn.DataParallel(self._network, self._multiple_gpus)
-
-        self._network.eval()
-        for epoch in range(run_epochs):
-            losses = 0.
-            losses_cls, losses_dom = 0., 0.
-
-            sampled_data = []
-            sampled_label = []
-            sampled_domain_id = []
-            num_sampled_pcls = 256
-
-            for c_id in range(crct_num):
-                t_id = self.cls_to_task_id[c_id]
-                d_id = self.cls_to_domain_id[c_id]
-
-                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
-                cls_cov = self._class_covs_slca[c_id].to(self._device)
-                
-                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
-
-                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
-                sampled_data.append(sampled_data_single)                
-                sampled_label.extend([c_id]*num_sampled_pcls)
-                sampled_domain_id.extend([d_id]*num_sampled_pcls)
-
-            sampled_data = torch.cat(sampled_data, dim=0).float().to(self._device)
-            sampled_label = torch.tensor(sampled_label).long().to(self._device)
-            sampled_domain_id = torch.tensor(sampled_domain_id).long().to(self._device)
-
-            sf_indexes = torch.randperm(sampled_data.size(0))
-            inputs = sampled_data[sf_indexes]
-            targets = sampled_label[sf_indexes]
-            domain_id = sampled_domain_id[sf_indexes]
-
-            for _iter in range(crct_num):
-                inp = inputs[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-                tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-                did = domain_id[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
-
-                ptp_id = np.random.choice(
-                    len(self.prototypes), size=num_sampled_pcls, replace=True
-                )
-                ptp_inps = self.prototypes[ptp_id]
-                ptp_dids = self.prototypes_domain_id[ptp_id]
-                ptp_inps = torch.tensor(ptp_inps).float().to(self._device)
-                ptp_dids = torch.tensor(ptp_dids).long().to(self._device)
-
-                fake_inps = self._network.domain_tsf(inp, ptp_inps)
-
-                all_inps = torch.cat([inp, fake_inps], dim=0)
-                all_tgts = torch.cat([tgt, tgt], dim=0)
-                all_dids = torch.cat([did, ptp_dids], dim=0)
-
-                all_class_outputs = self._network.class_clf(all_inps)
-                cls_loss = sup_con(features=all_class_outputs, labels=all_tgts)
-
-                all_domain_outputs = self._network.domain_clf(all_inps)
-                dom_loss = sup_con(features=all_domain_outputs, labels=all_dids)
-
-                loss = cls_loss + dom_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses += loss.item()
-                losses_cls += cls_loss.item()
-                losses_dom += dom_loss.item()
-
-            scheduler.step()
-
-            info = 'DOT Task {} => Loss {:.3f}, Cls_loss {:.3f}, Dom_loss {:.3f}'.format(
-                self._cur_task, losses/self._total_classes, losses_cls/self._total_classes, losses_dom/self._total_classes)
-            logging.info(info)
-
-
-    def _stage3_compact_classifier(self):
+    def _stage2_compact_classifier(self):
         for p in self._network.fc.parameters():
             p.requires_grad=True
             
@@ -321,20 +210,6 @@ class Learner(BaseLearner):
                 inp = inputs[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
                 tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
 
-                if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
-                    ptp_id = np.random.choice(
-                        len(self.prototypes), size=num_sampled_pcls, replace=True
-                    )
-                    ptp_inps = self.prototypes[ptp_id]
-                    ptp_dids = self.prototypes_domain_id[ptp_id]
-                    ptp_inps = torch.tensor(ptp_inps).float().to(self._device)
-                    ptp_dids = torch.tensor(ptp_dids).long().to(self._device)
-
-                    fake_inps = self._network.domain_tsf(inp, ptp_inps)
-
-                    inp = torch.cat([inp, fake_inps], dim=0)
-                    tgt = torch.cat([tgt, tgt], dim=0)
-
                 outputs = self._network(inp, bcb_no_grad=True, fc_only=True)
                 logits = outputs['logits']
 
@@ -383,16 +258,11 @@ class Learner(BaseLearner):
             self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
             self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
         
-        all_features = []
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
                                                                   mode='test', ret_data=True)
             idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
-            if self.dot_epochs > 0:
-                vectors, features, _ = self._extract_layerwise_vectors(idx_loader)
-                all_features.append(features)
-            else:
-                vectors, _ = self._extract_vectors(idx_loader)
+            vectors, _ = self._extract_vectors(idx_loader)
 
             class_mean = np.mean(vectors, axis=0)
             # class_cov = np.cov(vectors.T)
@@ -402,32 +272,6 @@ class Learner(BaseLearner):
 
         logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
 
-        if self.dot_epochs > 0:
-            all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
-            all_features_mean = np.mean(all_features, axis=1) # [num_samples, feature_dim]
-            kmeans = KMeans(n_clusters=self.domain_centorids).fit(all_features_mean)
-            feature_centers = kmeans.cluster_centers_
-            # find closest prototype for each center
-            prototype_idx = []
-            all_idx = np.arange(all_features_mean.shape[0])
-            for i in range(self.domain_centorids):
-                i_mask = (kmeans.labels_ == i)
-                i_idx = all_idx[i_mask]
-                dist = np.linalg.norm(all_features_mean[i_mask] - feature_centers[i], axis=1)
-                prototype_idx.append(i_idx[np.argmin(dist)])
-
-            if self.prototypes is None:
-                self.prototypes = all_features[prototype_idx]
-                self.prototypes_domain_id = np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
-            else:
-                self.prototypes = np.concatenate([self.prototypes, all_features[prototype_idx]], axis=0)
-                self.prototypes_domain_id = np.concatenate([
-                    self.prototypes_domain_id, np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
-                ], axis=0)
-
-        logging.info('Compute domain prototypes for domain {}'.format(self._cur_domain))
-
-    
     def _extract_layerwise_vectors(self, loader):
         self._network.eval()
         vectors, features, targets = [], [], []

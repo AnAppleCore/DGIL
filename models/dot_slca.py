@@ -37,7 +37,10 @@ class Learner(BaseLearner):
         self.save_before_ca = args.get('save_before_ca', False)
 
         self.dot_epochs = args.get('dot_epochs', 0)
-        self.domain_centorids = args.get('domain_centorids', 32)
+        self.domain_centroids = args.get('domain_centroids', 32)
+        self.dom_loss_weight = args.get('dom_loss_weight', 1.0)
+
+        self.orth_loss_weight = args.get('orth_loss_weight', 0.0)
 
         self.args = args
         self.seed = args['seed']
@@ -111,12 +114,21 @@ class Learner(BaseLearner):
         for _, epoch in enumerate(prog_bar):
             self._network.train()
             losses = 0.
+            losses_orth = 0.
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
 
-                logits = self._network(inputs, bcb_no_grad=self.fix_bcb)['logits']
+                output = self._network(inputs, bcb_no_grad=self.fix_bcb)
+                logits = output['logits']
+                features = output['pre_logits']
                 cur_targets = torch.where(targets-self._known_classes>=0, targets-self._known_classes, -100)
                 loss = F.cross_entropy(logits[:, self._known_classes:], cur_targets)
+
+                if self.orth_loss_weight > 0:
+                    # loss_orth = self._compute_orth_loss(features)
+                    loss_orth = self._compute_orth_loss(features, cur_targets)
+                    loss += self.orth_loss_weight * loss_orth
+                    losses_orth += loss_orth.item()
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -128,20 +140,22 @@ class Learner(BaseLearner):
             train_acc = self._compute_accuracy(self._network, train_loader)
             if (epoch + 1) % 5 == 0 or epoch == self.epochs - 1:
                 test_acc = self._compute_accuracy(self._network, test_loader)
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.epochs,
                     losses / len(train_loader),
+                    losses_orth / len(train_loader),
                     train_acc,
                     test_acc,
                 )
             else:
-                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
+                info = "Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}".format(
                     self._cur_task,
                     epoch + 1,
                     self.epochs,
                     losses / len(train_loader),
+                    losses_orth / len(train_loader),
                     train_acc,
                 )
             prog_bar.set_description(info)
@@ -254,7 +268,7 @@ class Learner(BaseLearner):
                 all_domain_outputs = self._network.domain_clf(all_inps)
                 dom_loss = sup_con(features=all_domain_outputs, labels=all_dids)
 
-                loss = cls_loss + dom_loss
+                loss = cls_loss + dom_loss * self.dom_loss_weight
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -405,12 +419,12 @@ class Learner(BaseLearner):
         if self.dot_epochs > 0:
             all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
             all_features_mean = np.mean(all_features, axis=1) # [num_samples, feature_dim]
-            kmeans = KMeans(n_clusters=self.domain_centorids).fit(all_features_mean)
+            kmeans = KMeans(n_clusters=self.domain_centroids).fit(all_features_mean)
             feature_centers = kmeans.cluster_centers_
             # find closest prototype for each center
             prototype_idx = []
             all_idx = np.arange(all_features_mean.shape[0])
-            for i in range(self.domain_centorids):
+            for i in range(self.domain_centroids):
                 i_mask = (kmeans.labels_ == i)
                 i_idx = all_idx[i_mask]
                 dist = np.linalg.norm(all_features_mean[i_mask] - feature_centers[i], axis=1)
@@ -418,11 +432,11 @@ class Learner(BaseLearner):
 
             if self.prototypes is None:
                 self.prototypes = all_features[prototype_idx]
-                self.prototypes_domain_id = np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+                self.prototypes_domain_id = np.zeros(self.domain_centroids, dtype=np.int32) + self._cur_domain
             else:
                 self.prototypes = np.concatenate([self.prototypes, all_features[prototype_idx]], axis=0)
                 self.prototypes_domain_id = np.concatenate([
-                    self.prototypes_domain_id, np.zeros(self.domain_centorids, dtype=np.int32) + self._cur_domain
+                    self.prototypes_domain_id, np.zeros(self.domain_centroids, dtype=np.int32) + self._cur_domain
                 ], axis=0)
 
         logging.info('Compute domain prototypes for domain {}'.format(self._cur_domain))
@@ -449,3 +463,35 @@ class Learner(BaseLearner):
         targets = np.concatenate(targets)
 
         return vectors, features, targets
+
+
+    # def _compute_orth_loss(self, features):
+    #     if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
+    #         sample_mean = []
+    #         for c_id in range(self._known_classes):
+    #             cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64)
+    #             sample_mean.append(cls_mean)
+    #         sample_mean = torch.stack(sample_mean, dim=0).to(self._device, non_blocking=True)
+    #         M = torch.cat([sample_mean, features], dim=0).to(self._device, non_blocking=True)
+    #         M = F.normalize(M, dim=1)
+    #         sim = torch.matmul(M, M.t()) / 0.8
+    #     else:
+    #         features = F.normalize(features, dim=1)
+    #         sim = torch.matmul(features, features.t()) / 0.8
+    #     loss = F.cross_entropy(sim, torch.arange(sim.shape[0]).long().to(self._device))
+    #     return loss
+
+
+    def _compute_orth_loss(self, features, targets):
+        # if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
+        #     sample_mean = []
+        #     sampled_label = []
+        #     for c_id in range(self._known_classes):
+        #         cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64)
+        #         sample_mean.append(cls_mean)
+        #         sampled_label.append(c_id)
+        #     sample_mean = torch.stack(sample_mean, dim=0).to(self._device, non_blocking=True)
+        #     sampled_label = torch.tensor(sampled_label).long().to(self._device, non_blocking=True)
+        #     features = torch.cat([sample_mean, features], dim=0).to(self._device, non_blocking=True)
+        #     targets = torch.cat([sampled_label, targets], dim=0).to(self._device, non_blocking=True)
+        return sup_con(features=features, labels=targets)
