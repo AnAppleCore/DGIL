@@ -2,9 +2,11 @@ import logging
 import os
 import time
 
+import kornia.augmentation as K
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from kornia.augmentation.auto import RandAugment, TrivialAugment
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from torch import nn, optim
@@ -14,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.base import BaseLearner
+from utils.distributions import *
 from utils.inc_net import SLCANet
 from utils.losses import sup_con
 
@@ -41,6 +44,11 @@ class Learner(BaseLearner):
         self.dom_loss_weight = args.get('dom_loss_weight', 1.0)
 
         self.orth_loss_weight = args.get('orth_loss_weight', 0.0)
+        
+        # augmentation used for single-source DG
+        self.use_rand_aug = args.get('use_rand_aug', False)
+        self.rand_aug = K.AugmentationSequential(RandAugment(n=2, m=10))
+        self.trivial_aug = K.AugmentationSequential(TrivialAugment())
 
         self.args = args
         self.seed = args['seed']
@@ -50,8 +58,11 @@ class Learner(BaseLearner):
         self.cls_to_task_id = {}
         self.cls_to_domain_id = {}
         self.domain_id_to_cls = {}
+        self.cls_dists = {}
         self.prototypes = None
         self.prototypes_domain_id = None
+        # dist type: mean_cov, mean_var, multi_cen
+        self.dist_type = args.get('dist_type', 'mean_cov')
 
         self.tsne_visualize = args.get('tsne_visualize', False)
 
@@ -117,6 +128,9 @@ class Learner(BaseLearner):
             losses_orth = 0.
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
+
+                if self.use_rand_aug:
+                    inputs = self.rand_aug(inputs)
 
                 output = self._network(inputs, bcb_no_grad=self.fix_bcb)
                 logits = output['logits']
@@ -224,12 +238,16 @@ class Learner(BaseLearner):
                 t_id = self.cls_to_task_id[c_id]
                 d_id = self.cls_to_domain_id[c_id]
 
-                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
-                cls_cov = self._class_covs_slca[c_id].to(self._device)
+                # cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)
+                # cls_cov = self._class_covs_slca[c_id].to(self._device)
                 
-                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+                # m = MultivariateNormal(cls_mean.float(), cls_cov.float())
 
-                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+                # sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+
+                cls_dist: BaseDist = self.cls_dists[c_id]
+                sampled_data_single = cls_dist.generate(num_sampled_pcls)
+
                 sampled_data.append(sampled_data_single)                
                 sampled_label.extend([c_id]*num_sampled_pcls)
                 sampled_domain_id.extend([d_id]*num_sampled_pcls)
@@ -312,12 +330,16 @@ class Learner(BaseLearner):
             for c_id in range(crct_num):
                 t_id = self.cls_to_task_id[c_id]
                 decay = (t_id+1)/(self._cur_task+1)*0.1
-                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)*(0.9+decay)
-                cls_cov = self._class_covs_slca[c_id].to(self._device)
+                # cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)*(0.9+decay)
+                # cls_cov = self._class_covs_slca[c_id].to(self._device)
                 
-                m = MultivariateNormal(cls_mean.float(), cls_cov.float())
+                # m = MultivariateNormal(cls_mean.float(), cls_cov.float())
 
-                sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+                # sampled_data_single = m.sample(sample_shape=(num_sampled_pcls,))
+
+                cls_dist: BaseDist = self.cls_dists[c_id]
+                sampled_data_single = cls_dist.generate(num_sampled_pcls, decay=decay)
+
                 sampled_data.append(sampled_data_single)                
                 sampled_label.extend([c_id]*num_sampled_pcls)
 
@@ -384,18 +406,18 @@ class Learner(BaseLearner):
 
 
     def _compute_distributions(self, data_manager):
-        if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
-            ori_classes = self._class_means_slca.shape[0]
-            assert ori_classes==self._known_classes
-            new_class_means_slca = np.zeros((self._total_classes, self.feature_dim))
-            new_class_means_slca[:self._known_classes] = self._class_means_slca
-            self._class_means_slca = new_class_means_slca
-            new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
-            new_class_cov[:self._known_classes] = self._class_covs_slca
-            self._class_covs_slca = new_class_cov
-        else:
-            self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
-            self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+        # if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
+        #     ori_classes = self._class_means_slca.shape[0]
+        #     assert ori_classes==self._known_classes
+        #     new_class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+        #     new_class_means_slca[:self._known_classes] = self._class_means_slca
+        #     self._class_means_slca = new_class_means_slca
+        #     new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+        #     new_class_cov[:self._known_classes] = self._class_covs_slca
+        #     self._class_covs_slca = new_class_cov
+        # else:
+        #     self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+        #     self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
         
         all_features = []
         for class_idx in range(self._known_classes, self._total_classes):
@@ -408,11 +430,30 @@ class Learner(BaseLearner):
             else:
                 vectors, _ = self._extract_vectors(idx_loader)
 
-            class_mean = np.mean(vectors, axis=0)
-            # class_cov = np.cov(vectors.T)
-            class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T)+torch.eye(class_mean.shape[-1])*1e-4
-            self._class_means_slca[class_idx, :] = class_mean
-            self._class_covs_slca[class_idx, ...] = class_cov
+            # class_mean = np.mean(vectors, axis=0)
+            # class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T)+torch.eye(class_mean.shape[-1])*1e-4
+            # self._class_means_slca[class_idx, :] = class_mean
+            # self._class_covs_slca[class_idx, ...] = class_cov
+
+            vectors = torch.tensor(vectors, dtype=torch.float64).to(self._device)
+            if self.dist_type == 'mean_cov':
+                cls_dist = CovarianceDist(feature_dim=vectors.shape[-1], device=self._device)
+                cls_mean = torch.mean(vectors, dim=0)
+                cls_cov = torch.cov(vectors.T)
+                cls_dist.init_from(mean=cls_mean, cov=cls_cov, num_samples=vectors.shape[0])
+            elif self.dist_type == 'mean_var':
+                cls_dist = VarianceDist(feature_dim=vectors.shape[-1], device=self._device)
+                cls_mean = torch.mean(vectors, dim=0)
+                cls_var = torch.var(vectors, dim=0)
+                cls_dist.init_from(mean=cls_mean, var=cls_var, num_samples=vectors.shape[0])
+            elif self.dist_type == 'multi_cen':
+                n_centroids = min(10, vectors.shape[0])
+                cls_dist = MultiCentroidDist(n_centroids=n_centroids, feature_dim=vectors.shape[-1], device=self._device)
+                cls_dist.compute_centroids(vectors)
+            else:
+                raise NotImplementedError(f"Unsupported distribution type: {self.dist_type}")
+            
+            self.cls_dists[class_idx] = cls_dist
 
         logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
 

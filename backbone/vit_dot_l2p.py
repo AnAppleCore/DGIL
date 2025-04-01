@@ -1148,3 +1148,87 @@ def vit_base_patch16_18x2_224_dot_l2p(pretrained=False, **kwargs):
         patch_size=16, embed_dim=768, depth=18, num_heads=12, init_values=1e-5, block_fn=ParallelBlock, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_18x2_224', pretrained=pretrained, **model_kwargs)
     return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_dot_l2p(pretrained=False, **kwargs):
+
+    ckpt_path = './checkpoints/iBOT-21K/checkpoint.pth'
+
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    state_dict = model.state_dict()
+    s_ckpt = torch.load(ckpt_path, map_location='cpu')['teacher']
+
+    ckpt = {}
+    for key, val in s_ckpt.items():
+        new_key = key.replace('backbone.', '')
+        ckpt[new_key] = val
+
+    not_in_k = [k for k in ckpt.keys() if k not in state_dict]
+    for k in not_in_k:
+        del ckpt[k]
+    
+    if 'pos_embed' in ckpt:
+        pos_embed_checkpoint = ckpt['pos_embed']
+        pos_embed_current = model.pos_embed.data
+        
+        num_patches = model.patch_embed.num_patches
+        num_prefix_tokens = 1 if model.class_token else 0
+        gs_new = (int(math.sqrt(num_patches)), int(math.sqrt(num_patches)))
+        
+        new_pos_embed = resize_pos_embed(
+            pos_embed_checkpoint, 
+            pos_embed_current,
+            num_prefix_tokens=num_prefix_tokens,
+            gs_new=gs_new
+        )
+        ckpt['pos_embed'] = new_pos_embed
+
+    msg = model.load_state_dict(ckpt, strict=False)
+    _logger.info(f"Loaded iBOT-21K weights from {ckpt_path}")
+    return model
+
+@register_model
+def vit_small_patch16_224_supweak_dot_l2p(pretrained=False, **kwargs):
+
+    ckpt_path = './checkpoints/Sup-Weak/best_checkpoint.pth'
+
+    model_kwargs = dict(
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)
+    model = _create_vision_transformer('vit_small_patch16_224_in21k', pretrained=False, **model_kwargs)
+    #del model.head
+    state_dict = model.state_dict()
+    ckpt = torch.load(ckpt_path, map_location='cpu')['model']
+    not_in_k = [k for k in ckpt.keys() if k not in state_dict.keys()]
+    head = [k for k in ckpt.keys() if 'head' in k]
+    for k in head:
+        del ckpt[k]
+    for k in not_in_k:
+        del ckpt[k]
+    # state_dict.update(ckpt)
+    # model.load_state_dict(state_dict)
+    # # del model.norm
+    # # model.norm = nn.LayerNorm(768)
+    # return model
+
+    if 'pos_embed' in ckpt:
+        pos_embed_checkpoint = ckpt['pos_embed']
+        pos_embed_current = model.pos_embed.data
+        
+        num_patches = model.patch_embed.num_patches
+        num_prefix_tokens = 1 if model.class_token else 0
+        gs_new = (int(math.sqrt(num_patches)), int(math.sqrt(num_patches)))
+        
+        new_pos_embed = resize_pos_embed(
+            pos_embed_checkpoint, 
+            pos_embed_current,
+            num_prefix_tokens=num_prefix_tokens,
+            gs_new=gs_new
+        )
+        ckpt['pos_embed'] = new_pos_embed
+
+    msg = model.load_state_dict(ckpt, strict=False)
+    _logger.info(f"Loaded Sup-Weak weights from {ckpt_path}")
+    return model

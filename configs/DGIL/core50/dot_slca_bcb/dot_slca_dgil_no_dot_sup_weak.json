@@ -1,15 +1,15 @@
 {
-    "prefix": "DGIL",
-    "dataset": "digitsdg",
+    "prefix": "DGIL_dot_no_dot_sup_weak",
+    "dataset": "core50",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 2,
-    "increment": 2,
-    "model_name": "slca",
+    "init_cls": 5,
+    "increment": 5,
+    "model_name": "dot_slca",
     "model_postfix": "20e",
-    "backbone_type": "vit_base_patch16_224",
+    "backbone_type": "vit_small_patch16_224_supweak_dot",
     "device": [
         "0"
     ],

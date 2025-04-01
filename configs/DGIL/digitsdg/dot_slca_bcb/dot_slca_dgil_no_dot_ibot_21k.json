@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL",
+    "prefix": "DGIL_dot_no_dot_ibot_21k",
     "dataset": "digitsdg",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -7,9 +7,9 @@
     "shuffle": true,
     "init_cls": 2,
     "increment": 2,
-    "model_name": "slca",
+    "model_name": "dot_slca",
     "model_postfix": "20e",
-    "backbone_type": "vit_base_patch16_224",
+    "backbone_type": "vit_base_patch16_224_21k_ibot_dot",
     "device": [
         "0"
     ],

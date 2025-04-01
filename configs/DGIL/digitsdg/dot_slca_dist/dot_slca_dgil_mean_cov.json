@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL",
+    "prefix": "DGIL_dot_mean_cov",
     "dataset": "digitsdg",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -7,9 +7,9 @@
     "shuffle": true,
     "init_cls": 2,
     "increment": 2,
-    "model_name": "slca",
+    "model_name": "dot_slca",
     "model_postfix": "20e",
-    "backbone_type": "vit_base_patch16_224",
+    "backbone_type": "vit_base_patch16_224_dot",
     "device": [
         "0"
     ],
@@ -30,5 +30,7 @@
     "enable_dgil": true,
     "random_reference": true,
     "reference_domain_id": 0,
-    "multi_domain_base_task": false
+    "multi_domain_base_task": false,
+    "dot_epochs": 10,
+    "dist_type": "mean_cov"
 }

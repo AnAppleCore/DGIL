@@ -1,12 +1,12 @@
 {
-    "prefix": "DGIL_dot_orth0.1_dom1",
-    "dataset": "domainnet",
+    "prefix": "DGIL_dot_multi_cen",
+    "dataset": "officehome",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 35,
-    "increment": 35,
+    "init_cls": 13,
+    "increment": 13,
     "model_name": "dot_l2p",
     "backbone_type": "vit_base_patch16_224_dot_l2p",
     "get_original_backbone": true,
@@ -14,11 +14,11 @@
         "0"
     ],
     "seed": [
-        1993, 1994, 1995, 1996
+        1994, 1995, 1996
     ],
-    "tuned_epoch": 10,
+    "tuned_epoch": 5,
     "init_lr": 0.001875,
-    "batch_size": 32,
+    "batch_size": 16,
     "weight_decay": 0,
     "min_lr": 1e-05,
     "optimizer": "adam",
@@ -58,6 +58,5 @@
     "multi_domain_base_task": false,
     "dot_epochs": 10,
     "ca_epochs": 3,
-    "orth_loss_weight": 0.1,
-    "dom_loss_weight": 1
+    "dist_type": "multi_cen"
 }

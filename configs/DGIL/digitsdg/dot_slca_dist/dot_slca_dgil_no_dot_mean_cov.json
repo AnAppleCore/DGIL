@@ -1,5 +1,5 @@
 {
-    "prefix": "DGIL_dot_sup0.1_dom1",
+    "prefix": "DGIL_dot_no_dot_mean_cov",
     "dataset": "digitsdg",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -14,10 +14,7 @@
         "0"
     ],
     "seed": [
-        1993,
-        1994,
-        1995,
-        1996
+        1994, 1995, 1996
     ],
     "lrate": 0.01,
     "weight_decay": 0.0005,
@@ -34,7 +31,5 @@
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "dot_epochs": 10,
-    "orth_loss_weight": 0.1,
-    "dom_loss_weight": 1
+    "dist_type": "mean_cov"
 }

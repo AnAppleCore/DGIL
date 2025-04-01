@@ -4,7 +4,15 @@ import torch.distributions as dist
 from sklearn.cluster import KMeans
 
 
-class CovarianceDist:
+class BaseDist():
+    def __init__():
+        pass
+
+    def generate(self, num_samples_to_generate, decay=0.1):
+        pass
+
+
+class CovarianceDist(BaseDist):
     def __init__(self, feature_dim, device):
         self.mean = torch.zeros(feature_dim).to(device)
         self.cov = torch.zeros((feature_dim, feature_dim)).to(device)
@@ -48,7 +56,38 @@ class CovarianceDist:
         return feature_vector
     
 
-class MultiCentroidDist:
+class VarianceDist(BaseDist):
+    def __init__(self, feature_dim, device):
+        self.mean = torch.zeros(feature_dim).to(device)
+        self.var = torch.zeros(feature_dim).to(device)
+        self.num_samples = 0
+        self.device = device
+
+    def init_from(self, mean, var, num_samples):
+        """Set the initial mean and covariance."""
+        if torch.isnan(mean).any() or torch.isinf(mean).any():
+            raise ValueError("Initial mean contains NaN or inf values.")
+        if torch.isnan(var).any() or torch.isinf(var).any():
+            raise ValueError("Initial variance contains NaN or inf values.")
+        self.mean = mean
+        self.var = var
+        self.num_samples = num_samples
+
+    def generate(self, num_samples_to_generate, decay=0.1):
+        """Generate a feature vector by sampling from the domain's distribution."""
+        if self.num_samples == 0:
+            raise ValueError("Cannot generate samples because the distribution is empty.")
+        cov_reg = torch.diag(self.var) + 1e-4 * torch.eye(self.var.shape[0], device=self.device)
+        if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
+            raise ValueError("Covariance matrix contains NaN or inf values after regularization.")
+        mean_vec = self.mean * (0.9 + decay)
+        mvn = dist.MultivariateNormal(mean_vec, covariance_matrix=cov_reg)
+        feature_vector = mvn.sample((num_samples_to_generate,)).to(self.device)
+
+        return feature_vector
+    
+
+class MultiCentroidDist(BaseDist):
     def __init__(self, n_centroids, feature_dim, device):
         self.n_clusters = n_centroids
         self.feature_dim = feature_dim

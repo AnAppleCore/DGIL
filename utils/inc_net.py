@@ -38,6 +38,17 @@ def get_backbone(args, pretrained=False):
                 model = timm.create_model("vit_base_patch16_224_in21k_dot",pretrained=True, num_classes=0)
                 model.out_dim = 768
                 return model.eval()
+            elif name == "pretrained_vit_b16_224_21k_ibot_dot" or name == "vit_base_patch16_224_21k_ibot_dot":
+                model = timm.create_model("vit_base_patch16_224_21k_ibot_dot",pretrained=True, num_classes=0)
+                model.out_dim = 768
+                return model.eval()
+            elif name == "pretrained_vit_s16_224_supweak_dot" or name == "vit_small_patch16_224_supweak_dot":
+                model = timm.create_model("vit_small_patch16_224_supweak_dot",pretrained=True, num_classes=0)
+                model.out_dim = 384
+                return model.eval()
+            else:
+                raise NotImplementedError("Unsupported model name for DoT SLCA")
+
         elif args["model_name"] == "dot_l2p":
             from backbone import vit_dot_l2p
             model = timm.create_model(

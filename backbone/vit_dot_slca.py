@@ -1261,3 +1261,51 @@ def vit_giant_patch14_224_clip_laion2b_dot(pretrained=False, **kwargs):
         pre_norm=True, norm_layer=nn.LayerNorm, **kwargs)
     model = _create_vision_transformer('vit_giant_patch14_224_clip_laion2b', pretrained=pretrained, **model_kwargs)
     return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_dot(pretrained=False, **kwargs):
+
+    ckpt_path = './checkpoints/iBOT-21K/checkpoint.pth'
+
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    state_dict = model.state_dict()
+    s_ckpt = torch.load(ckpt_path, map_location='cpu')['teacher']
+    ckpt = {}
+    for key, val in s_ckpt.items():
+        new_key = key.replace('backbone.', '')
+        ckpt[new_key] = val
+    not_in_k = [k for k in ckpt.keys() if k not in state_dict.keys()]
+    for k in not_in_k:
+        del ckpt[k]
+    state_dict.update(ckpt)
+    model.load_state_dict(state_dict)
+    # del model.norm
+    # model.norm = nn.LayerNorm(768)
+    _logger.info(f'Loaded iBOT-21K weights from {ckpt_path}')
+    return model
+
+
+@register_model
+def vit_small_patch16_224_supweak_dot(pretrained=False, **kwargs):
+
+    ckpt_path = './checkpoints/Sup-Weak/best_checkpoint.pth'
+
+    model_kwargs = dict(
+        patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)
+    model = _create_vision_transformer('vit_small_patch16_224_in21k', pretrained=False, **model_kwargs)
+    state_dict = model.state_dict()
+    ckpt = torch.load(ckpt_path, map_location='cpu')['model']
+    ckpt_keys = ckpt.keys()
+    not_in_k = [k for k in ckpt.keys() if k not in state_dict.keys()]
+    for k in not_in_k:
+        del ckpt[k]
+    head = [k for k in ckpt.keys() if 'head' in k]
+    for k in head:
+        del ckpt[k]
+    state_dict.update(ckpt)
+    model.load_state_dict(state_dict)
+    _logger.info(f'Loaded Sup-Weak weights from {ckpt_path}')
+    return model

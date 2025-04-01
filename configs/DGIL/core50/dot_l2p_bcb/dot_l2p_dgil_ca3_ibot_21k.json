@@ -1,20 +1,20 @@
 {
-    "prefix": "DGIL_dot_orth0.1_dom1",
-    "dataset": "digitsdg",
+    "prefix": "DGIL_dot_ca3_ibot_21k",
+    "dataset": "core50",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 2,
-    "increment": 2,
+    "init_cls": 5,
+    "increment": 5,
     "model_name": "dot_l2p",
-    "backbone_type": "vit_base_patch16_224_dot_l2p",
+    "backbone_type": "vit_base_patch16_224_21k_ibot_dot_l2p",
     "get_original_backbone": true,
     "device": [
         "0"
     ],
     "seed": [
-        1993, 1994, 1995, 1996
+        1994, 1995, 1996
     ],
     "tuned_epoch": 5,
     "init_lr": 0.001875,
@@ -56,8 +56,5 @@
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "dot_epochs": 10,
-    "ca_epochs": 3,
-    "orth_loss_weight": 0.1,
-    "dom_loss_weight": 1
+    "ca_epochs": 3
 }

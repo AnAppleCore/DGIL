@@ -1,12 +1,12 @@
 {
-    "prefix": "DGIL_dot_sup0.1_dom1",
-    "dataset": "core50",
+    "prefix": "DGIL_dot_no_dot_multi_cen",
+    "dataset": "officehome",
     "memory_size": 0,
     "memory_per_class": 0,
     "fixed_memory": false,
     "shuffle": true,
-    "init_cls": 5,
-    "increment": 5,
+    "init_cls": 13,
+    "increment": 13,
     "model_name": "dot_slca",
     "model_postfix": "20e",
     "backbone_type": "vit_base_patch16_224_dot",
@@ -14,10 +14,7 @@
         "0"
     ],
     "seed": [
-        1993,
-        1994,
-        1995,
-        1996
+        1994, 1995, 1996
     ],
     "lrate": 0.01,
     "weight_decay": 0.0005,
@@ -34,7 +31,5 @@
     "random_reference": true,
     "reference_domain_id": 0,
     "multi_domain_base_task": false,
-    "dot_epochs": 10,
-    "orth_loss_weight": 0.1,
-    "dom_loss_weight": 1
+    "dist_type": "multi_cen"
 }
