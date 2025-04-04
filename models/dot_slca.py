@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models.base import BaseLearner
+from utils.domain_data_manager import DomainDataManager
 from utils.distributions import *
 from utils.inc_net import SLCANet
 from utils.losses import sup_con
@@ -118,6 +119,12 @@ class Learner(BaseLearner):
             self._stage2_domain_transformation()
         if self._cur_task > 0 and self.ca_epochs > 0:
             self._stage3_compact_classifier()
+
+        if self.tsne_visualize and self._cur_task == data_manager.nb_tasks - 1:
+            if self.dot_epochs > 0:
+                self.save_dot_features_for_tsne()
+            else:
+                self.save_features_for_tsne()
         
 
     def _run(self, train_loader, test_loader, optimizer, scheduler):
@@ -505,6 +512,156 @@ class Learner(BaseLearner):
 
         return vectors, features, targets
 
+
+    def save_features_for_tsne(self):
+
+        all_features = []
+        all_domain_ids = []
+        all_class_ids = []
+        
+        for domain_id in range(self.data_manager.num_domains):
+            for class_idx in range(self._total_classes):
+                data, targets, idx_dataset = self.data_manager.get_domain_dataset(
+                    np.arange(class_idx, class_idx+1), source='test', mode='test', 
+                    domain_id=domain_id,ret_data=True
+                )
+                idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+                _, features, _ = self._extract_layerwise_vectors(idx_loader)
+                
+                all_features.append(features)
+                all_domain_ids.append(
+                    np.ones(features.shape[0], dtype=np.int32)*domain_id
+                )
+                all_class_ids.append(
+                    np.ones(features.shape[0], dtype=np.int32)*class_idx
+                )
+
+        all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
+        all_domain_ids = np.concatenate(all_domain_ids, axis=0) # [num_samples]
+        all_class_ids = np.concatenate(all_class_ids, axis=0) # [num_samples]
+
+        # save to disk
+        save_dir = os.path.join("./imgs", f'{self.args["dataset"]}_dot{self.dot_epochs:02d}')
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        np.savez(os.path.join(save_dir, f"features.npz"),
+                 features=all_features, domain_ids=all_domain_ids, class_ids=all_class_ids)
+
+
+    def save_dot_features_for_tsne(self):
+
+        all_sampled = []
+        all_generated = []
+        all_real = []
+
+        all_sampled_proj = []
+        all_generated_proj = []
+        all_real_proj = []
+
+        all_sampled_dids = []
+        all_generated_dids = []
+        all_real_dids = []
+
+        all_sampled_cids = []
+        all_generated_cids = []
+        all_real_cids = []
+
+        num_sampled_pcls = 64
+
+        for c_id in range(self._total_classes):
+            t_id = self.cls_to_task_id[c_id]
+            d_id = self.cls_to_domain_id[c_id]
+            decay = (t_id+1)/(self._cur_task+1)*0.1
+
+            cls_dist: BaseDist = self.cls_dists[c_id]
+            sampled_data_single = cls_dist.generate(num_sampled_pcls, decay=decay)
+            all_sampled.append(sampled_data_single)
+            all_sampled_cids.extend([c_id]*num_sampled_pcls)
+            all_sampled_dids.extend([d_id]*num_sampled_pcls)
+
+            with torch.no_grad():
+                vectors_tensor = sampled_data_single.clone().detach()
+                vectors_proj = self._network.domain_clf(vectors_tensor)
+                all_sampled_proj.append(vectors_proj)
+
+            for rd_id in range(self.data_manager.num_domains):
+                data, targets, idx_dataset = self.data_manager.get_domain_dataset(
+                    np.arange(c_id, c_id+1), source='test', mode='test', 
+                    domain_id=rd_id, ret_data=True
+                )
+                idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+                vectors, _ = self._extract_vectors(idx_loader)
+                vectors = vectors[:num_sampled_pcls]
+
+                with torch.no_grad():
+                    vectors_tensor = torch.tensor(vectors).float().to(self._device)
+                    vectors_proj = self._network.domain_clf(vectors_tensor)
+                    vectors_proj = vectors_proj.cpu().numpy()
+
+                all_real.append(vectors)
+                all_real_proj.append(vectors_proj)
+                all_real_cids.append(
+                    np.ones(vectors.shape[0], dtype=np.int32)*c_id
+                )
+                all_real_dids.append(
+                    np.ones(vectors.shape[0], dtype=np.int32)*rd_id
+                )
+
+        all_sampled = torch.cat(all_sampled, dim=0).float().to(self._device)
+        all_sampled_proj = torch.cat(all_sampled_proj, dim=0).float().to(self._device)
+        all_sampled_cids = torch.tensor(all_sampled_cids).long().to(self._device)
+        all_sampled_dids = torch.tensor(all_sampled_dids).long().to(self._device)
+
+        # generate fake data
+        for _iter in range(self._total_classes):
+            inp = all_sampled[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+            tgt = all_sampled_cids[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+
+            ptp_id = np.random.choice(
+                len(self.prototypes), size=num_sampled_pcls, replace=True
+            )
+            ptp_inps = self.prototypes[ptp_id]
+            ptp_dids = self.prototypes_domain_id[ptp_id]
+
+            ptp_inps = torch.tensor(ptp_inps).float().to(self._device)
+            ptp_dids = torch.tensor(ptp_dids).long().to(self._device)
+
+            with torch.no_grad():
+                fake_inps = self._network.domain_tsf(inp, ptp_inps)
+                vectors_proj = self._network.domain_clf(fake_inps)
+
+            all_generated.append(fake_inps)
+            all_generated_proj.append(vectors_proj)
+            all_generated_cids.append(tgt)
+            all_generated_dids.append(ptp_dids)
+
+        
+        # convert to numpy
+        all_real = np.concatenate(all_real, axis=0) # [num_samples, feature_dim]
+        all_real_proj = np.concatenate(all_real_proj, axis=0) # [num_samples, 512]
+        all_real_cids = np.concatenate(all_real_cids, axis=0) # [num_samples]
+        all_real_dids = np.concatenate(all_real_dids, axis=0) # [num_samples]
+
+        all_sampled = all_sampled.cpu().numpy()
+        all_sampled_proj = all_sampled_proj.cpu().numpy()
+        all_sampled_cids = all_sampled_cids.cpu().numpy()
+        all_sampled_dids = all_sampled_dids.cpu().numpy()
+
+        all_generated = torch.cat(all_generated, dim=0).cpu().numpy()
+        all_generated_proj = torch.cat(all_generated_proj, dim=0).cpu().numpy()
+        all_generated_cids = torch.cat(all_generated_cids, dim=0).cpu().numpy()
+        all_generated_dids = torch.cat(all_generated_dids, dim=0).cpu().numpy()
+
+        # save to disk
+        save_dir = os.path.join("./imgs", f'{self.args["dataset"]}_dot{self.dot_epochs:02d}')
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        np.savez(os.path.join(save_dir, f"real_features.npz"),
+                 features=all_real, projections=all_real_proj, domain_ids=all_real_dids, class_ids=all_real_cids)
+        np.savez(os.path.join(save_dir, f"sampled_features.npz"),
+                 features=all_sampled, projections=all_sampled_proj, domain_ids=all_sampled_dids, class_ids=all_sampled_cids)
+        np.savez(os.path.join(save_dir, f"generated_features.npz"),
+                 features=all_generated, projections=all_generated_proj, domain_ids=all_generated_dids, class_ids=all_generated_cids)
 
     # def _compute_orth_loss(self, features):
     #     if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:

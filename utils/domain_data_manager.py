@@ -225,16 +225,33 @@ class DomainDataManager(DataManager):
         
 
     def assign_domain_id(self):
-        # Create an array with repeated domain IDs
-        domain_ids = np.tile(np.arange(self.num_domains), self.nb_tasks // self.num_domains)
-        
-        # If there are extra tasks, randomly assign the remainder
-        domain_ids = np.concatenate([
-            domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains, replace=False)
-        ])
-        
-        # Shuffle the domain IDs to randomize the assignments
-        np.random.shuffle(domain_ids)
+
+        num_unseen_domain = self.args.get("num_unseen_domain", 0)
+        assert num_unseen_domain < self.num_domains
+
+        if num_unseen_domain == 0:
+            # Create an array with repeated domain IDs
+            domain_ids = np.tile(np.arange(self.num_domains), self.nb_tasks // self.num_domains)
+            
+            # If there are extra tasks, randomly assign the remainder
+            domain_ids = np.concatenate([
+                domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains, replace=False)
+            ])
+            
+            # Shuffle the domain IDs to randomize the assignments
+            np.random.shuffle(domain_ids)
+
+        elif num_unseen_domain > 0:
+            domain_list = np.arange(self.num_domains)
+            num_seen_domain = self.num_domains - num_unseen_domain
+            seen_domain_list = np.random.choice(domain_list, num_seen_domain, replace=False)
+            unseen_domain_list = np.setdiff1d(domain_list, seen_domain_list)
+
+            domain_ids = np.tile(seen_domain_list, self.nb_tasks // num_seen_domain)
+            domain_ids = np.concatenate([
+                domain_ids, np.random.choice(seen_domain_list, self.nb_tasks % num_seen_domain, replace=False)
+            ])
+            np.random.shuffle(domain_ids)
         
         return domain_ids
 
