@@ -1,19 +1,20 @@
 import logging
+
 import numpy as np
 import torch
-from torch import nn
-from torch import optim
+from torch import nn, optim
+from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from models.base import BaseLearner
 from utils.inc_net import SLCANet
-from torch.distributions.multivariate_normal import MultivariateNormal
-from tqdm import tqdm
 
 num_workers = 8
 
 class Learner(BaseLearner):
-    def __init__(self, args):
+    def __init__(self, args:dict):
         super().__init__(args)
         self._network = SLCANet(args, pretrained=True)
         self.batch_size = args['batch_size']
@@ -22,30 +23,21 @@ class Learner(BaseLearner):
         self.lrate_decay = args['lrate_decay']
         self.weight_decay = args['weight_decay']
         self.milestones = args['milestones']
-        if 'bcb_lrscale' in args.keys():
-            self.bcb_lrscale = args['bcb_lrscale']
-        else:
-            self.bcb_lrscale = 1.0/100
-        if self.bcb_lrscale == 0:
-            self.fix_bcb = True
-        else:
-            self.fix_bcb = False
+        self.bcb_lrscale = args.get('bcb_lrscale', 1.0/100)
+        self.fix_bcb = self.bcb_lrscale == 0
         
         self.ca_epochs = args['ca_epochs']
-        
-        if 'ca_with_logit_norm' in args.keys() and args['ca_with_logit_norm']>0:
-            self.logit_norm = args['ca_with_logit_norm']
-        else:
-            self.logit_norm = None
-        
-        if 'save_before_ca' in args.keys() and args['save_before_ca']:
-            self.save_before_ca = True
-        else:
-            self.save_before_ca = False
-        
+        self.logit_norm = args.get('ca_with_logit_norm', None)
+        self.save_before_ca = args.get('save_before_ca', False)
+
         self.args = args
         self.seed = args['seed']
         self.task_sizes = []
+
+        self._cur_domain = 0
+        self.cls_to_task_id = {}
+        self.cls_to_domain_id = {}
+        self.domain_id_to_cls = {}
 
     def after_task(self):
         self._known_classes = self._total_classes
@@ -60,6 +52,17 @@ class Learner(BaseLearner):
         self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
         self.topk = min(self.topk, self._total_classes)
         self._network.update_fc(data_manager.get_task_size(self._cur_task))
+
+        try:
+            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+        except:
+            self._cur_domain = 0
+        for c_id in range(self._known_classes, self._total_classes):
+            self.cls_to_task_id[c_id] = self._cur_task
+            self.cls_to_domain_id[c_id] = self._cur_domain
+            if self._cur_domain not in self.domain_id_to_cls:
+                self.domain_id_to_cls[self._cur_domain] = []
+            self.domain_id_to_cls[self._cur_domain].append(c_id)
         logging.info('Learning on {}-{}'.format(self._known_classes, self._total_classes))
 
         self._network.to(self._device)
@@ -83,10 +86,9 @@ class Learner(BaseLearner):
         # if self.save_before_ca:
             # self.save_checkpoint(self.log_path+'/'+self.model_prefix+'_seed{}_before_ca'.format(self.seed), head_only=self.fix_bcb)
         
-        self._compute_class_mean(data_manager)
+        self._compute_distributions(data_manager)
         if self._cur_task > 0 and self.ca_epochs > 0:
-            self._stage2_compact_classifier(task_size)
-        
+            self._stage2_compact_classifier()
 
     def _run(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.epochs))
@@ -108,7 +110,7 @@ class Learner(BaseLearner):
             scheduler.step()
 
             train_acc = self._compute_accuracy(self._network, train_loader)
-            if (epoch + 1) % 5 == 0:
+            if (epoch + 1) % 5 == 0 or epoch == self.epochs - 1:
                 test_acc = self._compute_accuracy(self._network, test_loader)
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
                     self._cur_task,
@@ -157,7 +159,7 @@ class Learner(BaseLearner):
         self._run(train_loader, test_loader, optimizer, scheduler)
 
 
-    def _stage2_compact_classifier(self, task_size):
+    def _stage2_compact_classifier(self):
         for p in self._network.fc.parameters():
             p.requires_grad=True
             
@@ -183,9 +185,9 @@ class Learner(BaseLearner):
             num_sampled_pcls = 256
         
             for c_id in range(crct_num):
-                t_id = c_id//task_size
+                t_id = self.cls_to_task_id[c_id]
                 decay = (t_id+1)/(self._cur_task+1)*0.1
-                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)*(0.9+decay) # torch.from_numpy(self._class_means_slca[c_id]).to(self._device)
+                cls_mean = torch.tensor(self._class_means_slca[c_id], dtype=torch.float64).to(self._device)*(0.9+decay)
                 cls_cov = self._class_covs_slca[c_id].to(self._device)
                 
                 m = MultivariateNormal(cls_mean.float(), cls_cov.float())
@@ -204,10 +206,10 @@ class Learner(BaseLearner):
             inputs = inputs[sf_indexes]
             targets = targets[sf_indexes]
 
-            
             for _iter in range(crct_num):
                 inp = inputs[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
                 tgt = targets[_iter*num_sampled_pcls:(_iter+1)*num_sampled_pcls]
+
                 outputs = self._network(inp, bcb_no_grad=True, fc_only=True)
                 logits = outputs['logits']
 
@@ -242,7 +244,7 @@ class Learner(BaseLearner):
             logging.info(info)
 
 
-    def _compute_class_mean(self, data_manager):
+    def _compute_distributions(self, data_manager):
         if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
             ori_classes = self._class_means_slca.shape[0]
             assert ori_classes==self._known_classes
@@ -262,10 +264,32 @@ class Learner(BaseLearner):
             idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
             vectors, _ = self._extract_vectors(idx_loader)
 
-            # vectors = np.concatenate([vectors_aug, vectors])
-
             class_mean = np.mean(vectors, axis=0)
             # class_cov = np.cov(vectors.T)
             class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T)+torch.eye(class_mean.shape[-1])*1e-4
             self._class_means_slca[class_idx, :] = class_mean
             self._class_covs_slca[class_idx, ...] = class_cov
+
+        logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
+
+    def _extract_layerwise_vectors(self, loader):
+        self._network.eval()
+        vectors, features, targets = [], [], []
+
+        with torch.no_grad():
+            for _, _inputs, _targets in loader:
+                _targets = _targets.numpy()
+                if isinstance(self._network, nn.DataParallel):
+                    _vectors, _features = self._network.module.extract_layerwise_vector(_inputs.to(self._device))
+                else:
+                    _vectors, _features = self._network.extract_layerwise_vector(_inputs.to(self._device))
+                
+                vectors.append(_vectors)
+                features.append(_features)
+                targets.append(_targets)
+
+        vectors = np.concatenate(vectors)
+        features = np.concatenate(features)
+        targets = np.concatenate(targets)
+
+        return vectors, features, targets

@@ -240,7 +240,7 @@ def _train(args:dict):
 
         # report domain wise accuracy matrix and forgetting
         if use_multi_domain_dataset(args["dataset"]):
-            for domain_name in data_manager.domain_names:
+            for domain_id, domain_name in enumerate(data_manager.domain_names):
                 cnn_matrix = cnn_matrix_per_domain[domain_name]
                 if len(cnn_matrix)>0:
                     np_acctable = np.zeros([task + 1, task + 1])

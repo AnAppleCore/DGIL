@@ -165,3 +165,7 @@ logs/
 data/
 *.pdf
 *.csv
+imgs/
+configs/New
+configs/Tune
+checkpoints

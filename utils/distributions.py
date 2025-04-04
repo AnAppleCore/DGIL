@@ -4,7 +4,15 @@ import torch.distributions as dist
 from sklearn.cluster import KMeans
 
 
-class CovarianceDist:
+class BaseDist():
+    def __init__():
+        pass
+
+    def generate(self, num_samples_to_generate, decay=0.1):
+        pass
+
+
+class CovarianceDist(BaseDist):
     def __init__(self, feature_dim, device):
         self.mean = torch.zeros(feature_dim).to(device)
         self.cov = torch.zeros((feature_dim, feature_dim)).to(device)
@@ -34,20 +42,52 @@ class CovarianceDist:
         self.cov += (self.num_samples * new_samples) / (total_samples ** 2) * torch.outer(diff, diff)
         self.num_samples = total_samples
 
-    def generate(self, num_samples_to_generate):
+    def generate(self, num_samples_to_generate, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.num_samples == 0:
             raise ValueError("Cannot generate samples because the distribution is empty.")
         cov_reg = self.cov + 1e-4 * torch.eye(self.cov.shape[0], device=self.device)
         if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
             raise ValueError("Covariance matrix contains NaN or inf values after regularization.")
-        mvn = dist.MultivariateNormal(self.mean, covariance_matrix=cov_reg)
+        mean_vec = self.mean * (0.9 + decay)
+        mvn = dist.MultivariateNormal(mean_vec, covariance_matrix=cov_reg)
         feature_vector = mvn.sample((num_samples_to_generate,)).to(self.device)
 
         return feature_vector
     
 
-class MultiCentroidDist:
+class VarianceDist(BaseDist):
+    def __init__(self, feature_dim, device):
+        self.mean = torch.zeros(feature_dim).to(device)
+        self.var = torch.zeros(feature_dim).to(device)
+        self.num_samples = 0
+        self.device = device
+
+    def init_from(self, mean, var, num_samples):
+        """Set the initial mean and covariance."""
+        if torch.isnan(mean).any() or torch.isinf(mean).any():
+            raise ValueError("Initial mean contains NaN or inf values.")
+        if torch.isnan(var).any() or torch.isinf(var).any():
+            raise ValueError("Initial variance contains NaN or inf values.")
+        self.mean = mean
+        self.var = var
+        self.num_samples = num_samples
+
+    def generate(self, num_samples_to_generate, decay=0.1):
+        """Generate a feature vector by sampling from the domain's distribution."""
+        if self.num_samples == 0:
+            raise ValueError("Cannot generate samples because the distribution is empty.")
+        cov_reg = torch.diag(self.var) + 1e-4 * torch.eye(self.var.shape[0], device=self.device)
+        if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
+            raise ValueError("Covariance matrix contains NaN or inf values after regularization.")
+        mean_vec = self.mean * (0.9 + decay)
+        mvn = dist.MultivariateNormal(mean_vec, covariance_matrix=cov_reg)
+        feature_vector = mvn.sample((num_samples_to_generate,)).to(self.device)
+
+        return feature_vector
+    
+
+class MultiCentroidDist(BaseDist):
     def __init__(self, n_centroids, feature_dim, device):
         self.n_clusters = n_centroids
         self.feature_dim = feature_dim
@@ -135,7 +175,7 @@ class MultiCentroidDist:
         closest_indices = torch.tensor(closest_indices).to(self.device)
         return closest_indices
     
-    def generate(self, num_samples_to_generate):
+    def generate(self, num_samples_to_generate, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.cluster_means is None:
             raise ValueError("Cannot generate samples because the centroids are not computed.")
@@ -148,8 +188,9 @@ class MultiCentroidDist:
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for cluster {i} contains NaN or inf values.")
+                cluster_mean = self.cluster_means[i] * (0.9 + decay)
                 mvn = dist.MultivariateNormal(
-                    self.cluster_means[i], 
+                    cluster_mean, 
                     covariance_matrix=cov_reg
                 )
                 feature_vector = mvn.sample((num_samples_to_generate,))
@@ -160,7 +201,7 @@ class MultiCentroidDist:
         
         return feature_vectors
     
-    def generate_per_centroid(self, num_samples_per_centroid):
+    def generate_per_centroid(self, num_samples_per_centroid, decay=0.1):
         """Generate a feature vector by sampling from the domain's distribution."""
         if self.cluster_means is None:
             raise ValueError("Cannot generate samples because the centroids are not computed.")
@@ -173,8 +214,9 @@ class MultiCentroidDist:
                 # Check for invalid values
                 if torch.isnan(cov_reg).any() or torch.isinf(cov_reg).any():
                     raise ValueError(f"Covariance matrix for cluster {i} contains NaN or inf values.")
+                cluster_mean = self.cluster_means[i] * (0.9 + decay)
                 mvn = dist.MultivariateNormal(
-                    self.cluster_means[i], 
+                    cluster_mean, 
                     covariance_matrix=cov_reg
                 )
                 feature_vector = mvn.sample((num_samples_per_centroid,))

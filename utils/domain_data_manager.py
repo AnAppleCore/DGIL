@@ -84,6 +84,10 @@ class DomainDataManager(DataManager):
             self._test_data = np.concatenate(self._test_data)
             self._test_targets = np.concatenate(self._test_targets)
 
+            self.original_train_data = self._train_data
+            self.original_train_targets = self._train_targets
+            self.original_train_domain_idx = self._train_domain_idx
+
             return
 
         else:
@@ -124,6 +128,13 @@ class DomainDataManager(DataManager):
                 logging.info("Number of trainings imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(np.where(self._train_domain_idx == d)[0]), len(self._train_data[d])))
                 logging.info("Number of test imgs from domain [{}] {}: {}/{}".format(d, self.domain_names[d], len(self._test_data[d]), len(self._test_data[d])))
 
+            self._original_train_data = np.concatenate(self._train_data)
+            self._original_train_targets = np.concatenate(self._train_targets)
+            self._original_train_domain_idx = []
+            for d in range(self.num_domains):
+                self._original_train_domain_idx.append(np.ones(len(self._train_data[d]), dtype=np.int32) * d)
+            self._original_train_domain_idx = np.concatenate(self._original_train_domain_idx)
+
             self._train_data = np.concatenate(_train_data)
             self._train_targets = np.concatenate(_train_targets)
             self._test_data = np.concatenate(self._test_data)
@@ -141,13 +152,33 @@ class DomainDataManager(DataManager):
 
 
     def get_domain_dataset(
-        self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None
+        self, indices, source, mode, domain_id, appendent=None, ret_data=False, m_rate=None, exclude=False
     ):
         if source == "train":
-            domain_idx = np.where(self._train_domain_idx == domain_id)[0]
-            x, y = self._train_data[domain_idx], self._train_targets[domain_idx]
+            if type(domain_id) == list:
+                domain_idx = np.where(np.isin(self._original_train_domain_idx, domain_id))[0]
+            elif type(domain_id) == int:
+                if exclude:
+                    domain_idx = np.where(self._original_train_domain_idx != domain_id)[0]
+                else:
+                    domain_idx = np.where(self._original_train_domain_idx == domain_id)[0]
+            elif domain_id == 'all':
+                domain_idx = np.arange(len(self._original_train_data))
+            else:
+                raise ValueError("Unknown domain_id type {}.".format(type(domain_id)))
+            x, y = self._original_train_data[domain_idx], self._original_train_targets[domain_idx]
         elif source == "test":
-            domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+            if type(domain_id) == list:
+                domain_idx = np.where(np.isin(self._test_domain_idx, domain_id))[0]
+            elif type(domain_id) == int:
+                if exclude:
+                    domain_idx = np.where(self._test_domain_idx != domain_id)[0]
+                else:
+                    domain_idx = np.where(self._test_domain_idx == domain_id)[0]
+            elif domain_id == 'all':
+                domain_idx = np.arange(len(self._test_data))
+            else:
+                raise ValueError("Unknown domain_id type {}.".format(type(domain_id)))
             x, y = self._test_data[domain_idx], self._test_targets[domain_idx]
         else:
             raise ValueError("Unknown data source {}.".format(source))
@@ -194,16 +225,33 @@ class DomainDataManager(DataManager):
         
 
     def assign_domain_id(self):
-        # Create an array with repeated domain IDs
-        domain_ids = np.tile(np.arange(self.num_domains), self.nb_tasks // self.num_domains)
-        
-        # If there are extra tasks, randomly assign the remainder
-        domain_ids = np.concatenate([
-            domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains, replace=False)
-        ])
-        
-        # Shuffle the domain IDs to randomize the assignments
-        np.random.shuffle(domain_ids)
+
+        num_unseen_domain = self.args.get("num_unseen_domain", 0)
+        assert num_unseen_domain < self.num_domains
+
+        if num_unseen_domain == 0:
+            # Create an array with repeated domain IDs
+            domain_ids = np.tile(np.arange(self.num_domains), self.nb_tasks // self.num_domains)
+            
+            # If there are extra tasks, randomly assign the remainder
+            domain_ids = np.concatenate([
+                domain_ids, np.random.choice(np.arange(self.num_domains), self.nb_tasks % self.num_domains, replace=False)
+            ])
+            
+            # Shuffle the domain IDs to randomize the assignments
+            np.random.shuffle(domain_ids)
+
+        elif num_unseen_domain > 0:
+            domain_list = np.arange(self.num_domains)
+            num_seen_domain = self.num_domains - num_unseen_domain
+            seen_domain_list = np.random.choice(domain_list, num_seen_domain, replace=False)
+            unseen_domain_list = np.setdiff1d(domain_list, seen_domain_list)
+
+            domain_ids = np.tile(seen_domain_list, self.nb_tasks // num_seen_domain)
+            domain_ids = np.concatenate([
+                domain_ids, np.random.choice(seen_domain_list, self.nb_tasks % num_seen_domain, replace=False)
+            ])
+            np.random.shuffle(domain_ids)
         
         return domain_ids
 
