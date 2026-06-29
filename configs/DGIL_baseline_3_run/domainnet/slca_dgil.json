@@ -1,5 +1,5 @@
 {
-    "prefix": "CIL",
+    "prefix": "DGIL",
     "dataset": "domainnet",
     "memory_size": 0,
     "memory_per_class": 0,
@@ -8,7 +8,7 @@
     "init_cls": 35,
     "increment": 35,
     "model_name": "slca",
-    "model_postfix": "50e",
+    "model_postfix": "5e",
     "backbone_type": "vit_base_patch16_224",
     "device": [
         "0"

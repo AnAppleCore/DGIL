@@ -8,7 +8,7 @@
     "init_cls": 13,
     "increment": 13,
     "model_name": "slca",
-    "model_postfix": "50e",
+    "model_postfix": "5e",
     "backbone_type": "vit_base_patch16_224",
     "device": [
         "0"

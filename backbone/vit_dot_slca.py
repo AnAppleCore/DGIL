@@ -21,6 +21,7 @@ Hacked together by / Copyright 2020, Ross Wightman
 """
 import math
 import logging
+import os
 from functools import partial
 from collections import OrderedDict
 from typing import Optional
@@ -790,11 +791,16 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
+    local_default_cfg = default_cfgs.get(variant)
+    if pretrained and local_default_cfg:
+        url = local_default_cfg.get('url', '')
+        local_file = os.path.join('checkpoints', os.path.basename(url))
+        if url and os.path.exists(local_file):
+            pretrained_cfg = {**local_default_cfg, 'url': '', 'file': local_file, 'custom_load': url.endswith('.npz')}
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
-        pretrained_custom_load='npz' in pretrained_cfg['url'],
         **kwargs)
     return model
 
@@ -1266,7 +1272,7 @@ def vit_giant_patch14_224_clip_laion2b_dot(pretrained=False, **kwargs):
 @register_model
 def vit_base_patch16_224_21k_ibot_dot(pretrained=False, **kwargs):
 
-    ckpt_path = './checkpoints/iBOT-21K/checkpoint.pth'
+    ckpt_path = './checkpoints/ibot_21k_mepo_epoch_0.pth'
 
     model_kwargs = dict(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
@@ -1291,7 +1297,7 @@ def vit_base_patch16_224_21k_ibot_dot(pretrained=False, **kwargs):
 @register_model
 def vit_small_patch16_224_supweak_dot(pretrained=False, **kwargs):
 
-    ckpt_path = './checkpoints/Sup-Weak/best_checkpoint.pth'
+    ckpt_path = './checkpoints/best_checkpoint.pth'
 
     model_kwargs = dict(
         patch_size=16, embed_dim=384, depth=12, num_heads=6, **kwargs)

@@ -8,7 +8,7 @@
     "init_cls": 35,
     "increment": 35,
     "model_name": "dot_slca",
-    "model_postfix": "50e",
+    "model_postfix": "5e",
     "backbone_type": "vit_base_patch16_224_dot",
     "device": [
         "0"

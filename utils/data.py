@@ -6,6 +6,13 @@ from torchvision.transforms import InterpolationMode
 
 from utils.toolkit import split_images_labels, split_train_val
 
+DATA_ROOT = os.environ.get("DGIL_DATA_ROOT", "/data2/datasets")
+
+
+def dataset_path(*parts):
+    return os.path.join(DATA_ROOT, *parts)
+
+
 MultiDomainDatasets = [
     "domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef", "digitsdg", "digitsfive", "core50"
 ]
@@ -41,8 +48,8 @@ class iCIFAR10(iData):
     class_order = np.arange(10).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR10("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR10("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR10(dataset_path("CIFAR"), train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR10(dataset_path("CIFAR"), train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -69,8 +76,8 @@ class iCIFAR100(iData):
     class_order = np.arange(100).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR100("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR100("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR100(dataset_path("CIFAR"), train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR100(dataset_path("CIFAR"), train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -150,8 +157,8 @@ class iCIFAR224(iData):
         self.class_order = np.arange(100).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR100("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR100("/gpfs-flash/junlab/liyuan/hongwei/config/data/CIFAR", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR100(dataset_path("CIFAR"), train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR100(dataset_path("CIFAR"), train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -179,8 +186,8 @@ class iImageNet1000(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/ImageNet/train/"
-        test_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/ImageNet/val/"
+        train_dir = dataset_path("ImageNet", "train")
+        test_dir = dataset_path("ImageNet", "val")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -208,8 +215,8 @@ class iImageNet100(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/ImageNet-100/train/"
-        test_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/ImageNet-100/val/"
+        train_dir = dataset_path("ImageNet-100", "train")
+        test_dir = dataset_path("ImageNet-100", "val")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -238,8 +245,8 @@ class iImageNetR(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/imagenet-r/train/"
-        test_dir = "./data/imagenet-r/test/"
+        train_dir = dataset_path("imagenet-r", "train")
+        test_dir = dataset_path("imagenet-r", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -259,8 +266,8 @@ class iImageNetA(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/imagenet-a/train/"
-        test_dir = "./data/imagenet-a/test/"
+        train_dir = dataset_path("imagenet-a", "train")
+        test_dir = dataset_path("imagenet-a", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -281,8 +288,8 @@ class CUB(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/cub/train/"
-        test_dir = "./data/cub/test/"
+        train_dir = dataset_path("cub", "train")
+        test_dir = dataset_path("cub", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -302,8 +309,8 @@ class objectnet(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/objectnet/train/"
-        test_dir = "./data/objectnet/test/"
+        train_dir = dataset_path("objectnet", "train")
+        test_dir = dataset_path("objectnet", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -323,8 +330,8 @@ class omnibenchmark(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/omnibenchmark/train/"
-        test_dir = "./data/omnibenchmark/test/"
+        train_dir = dataset_path("omnibenchmark", "train")
+        test_dir = dataset_path("omnibenchmark", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -345,8 +352,8 @@ class vtab(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        train_dir = "./data/vtab-cil/vtab/train/"
-        test_dir = "./data/vtab-cil/vtab/test/"
+        train_dir = dataset_path("vtab-cil", "vtab", "train")
+        test_dir = dataset_path("vtab-cil", "vtab", "test")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
@@ -369,7 +376,7 @@ class domainnet(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/DomainNet/"
+        root_dir = dataset_path("DomainNet")
 
         self.train_data = []
         self.train_targets = []
@@ -419,7 +426,7 @@ class minidomainnet(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/DomainNet/"
+        root_dir = dataset_path("DomainNet")
         image_list_dir = os.path.join(root_dir, "splits_mini")
 
         self.train_data = []
@@ -470,7 +477,7 @@ class officehome(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/OfficeHomeDataset_10072016/"
+        root_dir = dataset_path("OfficeHomeDataset_10072016")
 
         self.train_data = []
         self.train_targets = []
@@ -502,7 +509,7 @@ class office31(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/office31/"
+        root_dir = dataset_path("office31")
 
         self.train_data = []
         self.train_targets = []
@@ -534,7 +541,7 @@ class officecaltech(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/office_caltech_10/"
+        root_dir = dataset_path("office_caltech_10")
 
         self.train_data = []
         self.train_targets = []
@@ -566,7 +573,7 @@ class imageclef(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/image_CLEF/"
+        root_dir = dataset_path("image_CLEF")
 
         self.train_data = []
         self.train_targets = []
@@ -598,7 +605,7 @@ class digitsdg(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/digits_dg"
+        root_dir = dataset_path("digits_dg")
 
         self.train_data = []
         self.train_targets = []
@@ -632,7 +639,7 @@ class digitsfive(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/dg5"
+        root_dir = dataset_path("dg5")
 
         self.train_data = []
         self.train_targets = []
@@ -664,7 +671,7 @@ class core50(iData):
 
     def download_data(self):
         # assert 0, "You should specify the folder of your dataset"
-        root_dir = "/gpfs-flash/junlab/liyuan/hongwei/config/data/core50/core50_128x128"
+        root_dir = dataset_path("core50", "core50_128x128")
 
         self.train_data = []
         self.train_targets = []

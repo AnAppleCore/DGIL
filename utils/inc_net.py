@@ -1,5 +1,6 @@
 import copy
 import logging
+import os
 
 import timm
 import torch
@@ -18,7 +19,15 @@ def get_backbone(args, pretrained=False):
     name = args["backbone_type"].lower()
     # SimpleCIL or SimpleCIL w/ Finetune
     if name == "pretrained_vit_b16_224" or name == "vit_base_patch16_224":
-        model = timm.create_model("vit_base_patch16_224",pretrained=True, num_classes=0)
+        local_file = os.path.join(
+            "checkpoints",
+            "B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz",
+        )
+        if os.path.exists(local_file):
+            from backbone import vit_dot_slca
+            model = timm.create_model("vit_base_patch16_224_dot", pretrained=True, num_classes=0)
+        else:
+            model = timm.create_model("vit_base_patch16_224",pretrained=True, num_classes=0)
         model.out_dim = 768
         return model.eval()
     elif name == "pretrained_vit_b16_224_in21k" or name == "vit_base_patch16_224_in21k":

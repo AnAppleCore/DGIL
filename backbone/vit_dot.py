@@ -26,6 +26,7 @@ for some einops/einsum fun
 """
 import logging
 import math
+import os
 from collections import OrderedDict
 from functools import partial
 from typing import Optional
@@ -740,11 +741,16 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
+    local_default_cfg = default_cfgs.get(variant)
+    if pretrained and local_default_cfg:
+        url = local_default_cfg.get('url', '')
+        local_file = os.path.join('checkpoints', os.path.basename(url))
+        if url and os.path.exists(local_file):
+            pretrained_cfg = {**local_default_cfg, 'url': '', 'file': local_file, 'custom_load': url.endswith('.npz')}
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
-        pretrained_custom_load='npz' in pretrained_cfg['url'],
         **kwargs)
     return model
 
