@@ -39,6 +39,13 @@ from timm.models.registry import register_model
 
 _logger = logging.getLogger(__name__)
 
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
+
 
 def _cfg(url='', **kwargs):
     return {
@@ -1271,26 +1278,73 @@ def vit_giant_patch14_224_clip_laion2b_dot(pretrained=False, **kwargs):
 
 @register_model
 def vit_base_patch16_224_21k_ibot_dot(pretrained=False, **kwargs):
-
-    ckpt_path = './checkpoints/ibot_21k_mepo_epoch_0.pth'
-
-    model_kwargs = dict(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
-    state_dict = model.state_dict()
-    s_ckpt = torch.load(ckpt_path, map_location='cpu')['teacher']
-    ckpt = {}
-    for key, val in s_ckpt.items():
-        new_key = key.replace('backbone.', '')
-        ckpt[new_key] = val
-    not_in_k = [k for k in ckpt.keys() if k not in state_dict.keys()]
-    for k in not_in_k:
-        del ckpt[k]
-    state_dict.update(ckpt)
-    model.load_state_dict(state_dict)
-    # del model.norm
-    # model.norm = nn.LayerNorm(768)
-    _logger.info(f'Loaded iBOT-21K weights from {ckpt_path}')
+    load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_dot(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        pre_norm=True, norm_layer=nn.LayerNorm, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        pre_norm=True, norm_layer=nn.LayerNorm, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_dot(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_dot(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
     return model
 
 

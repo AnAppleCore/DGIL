@@ -28,6 +28,12 @@ from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCE
 from timm.models.helpers import build_model_with_cfg, resolve_pretrained_cfg, named_apply, adapt_input_conv, checkpoint_seq
 from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
 from timm.models.registry import register_model
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -286,7 +292,7 @@ class VisionTransformer(nn.Module):
             self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None,
             drop_rate=0., attn_drop_rate=0., drop_path_rate=0., weight_init='', init_values=None,
-            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block):
+            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block, pre_norm=False):
         """
         Args:
             img_size (int, tuple): input image size
@@ -329,6 +335,7 @@ class VisionTransformer(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_embed_grow = nn.Parameter(torch.zeros(1, num_patches + 1000, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.Sequential(*[
@@ -415,6 +422,7 @@ class VisionTransformer(nn.Module):
         x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
 
         x = self.pos_drop(x + self.pos_embed)
+        x = self.norm_pre(x)
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
@@ -636,6 +644,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
 
     # NOTE this extra code to support handling of repr size for in21k pretrained models
     # pretrained_cfg = resolve_pretrained_cfg(variant, kwargs=kwargs)
+    kwargs.pop('pretrained_cfg', None)
     pretrained_cfg = resolve_pretrained_cfg(variant)
     local_default_cfg = default_cfgs.get(variant)
     if pretrained and local_default_cfg:
@@ -1067,17 +1076,53 @@ def vit_base_patch16_18x2_224(pretrained=False, **kwargs):
     return model
 
 
+@register_model
+def vit_base_patch16_224_21k_ibot_sprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_sprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_sprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_sprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=14, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch14_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
 class ViT_Prompts(VisionTransformer):
     def __init__(
             self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None,
             drop_rate=0., attn_drop_rate=0., drop_path_rate=0., weight_init='', init_values=None,
-            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block):
+            embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block, pre_norm=False):
 
         super().__init__(img_size=img_size, patch_size=patch_size, in_chans=in_chans, num_classes=num_classes, global_pool=global_pool,
             embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, representation_size=representation_size,
             drop_rate=drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate, weight_init=weight_init, init_values=init_values,
-            embed_layer=embed_layer, norm_layer=norm_layer, act_layer=act_layer, block_fn=block_fn)
+            embed_layer=embed_layer, norm_layer=norm_layer, act_layer=act_layer, block_fn=block_fn, pre_norm=pre_norm)
 
 
     def forward(self, x, instance_tokens=None, **kwargs):
@@ -1092,6 +1137,7 @@ class ViT_Prompts(VisionTransformer):
             x = torch.cat([x[:,:1,:], instance_tokens, x[:,1:,:]], dim=1)
 
         x = self.pos_drop(x)
+        x = self.norm_pre(x)
         x = self.blocks(x)
         x = self.norm(x)
         if self.global_pool:
@@ -1106,6 +1152,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     # NOTE this extra code to support handling of repr size for in21k pretrained models
+    kwargs.pop('pretrained_cfg', None)
     pretrained_cfg = resolve_pretrained_cfg(variant)
     local_default_cfg = default_cfgs.get(variant)
     if pretrained and local_default_cfg:

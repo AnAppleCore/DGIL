@@ -30,6 +30,23 @@ def get_backbone(args, pretrained=False):
             model = timm.create_model("vit_base_patch16_224",pretrained=True, num_classes=0)
         model.out_dim = 768
         return model.eval()
+    elif name in {
+        "vit_base_patch16_224_21k_ibot",
+        "vit_base_patch16_224_clip",
+        "vit_base_patch16_224_mae",
+        "vit_base_patch14_224_dinov2",
+        "vit_base_patch16_224_21k_ibot_lae",
+        "vit_base_patch16_224_clip_lae",
+        "vit_base_patch16_224_mae_lae",
+        "vit_base_patch14_224_dinov2_lae",
+    }:
+        if args.get("model_name") == "lae":
+            from backbone import vit_lae
+        else:
+            from backbone import vit_dot_slca
+        model = timm.create_model(args["backbone_type"], pretrained=args.get("pretrained", True), num_classes=0)
+        model.out_dim = 768
+        return model.eval()
     elif name == "pretrained_vit_b16_224_in21k" or name == "vit_base_patch16_224_in21k":
         model = timm.create_model("vit_base_patch16_224_in21k",pretrained=True, num_classes=0)
         model.out_dim = 768
@@ -51,6 +68,14 @@ def get_backbone(args, pretrained=False):
                 model = timm.create_model("vit_base_patch16_224_21k_ibot_dot",pretrained=True, num_classes=0)
                 model.out_dim = 768
                 return model.eval()
+            elif name in {
+                "vit_base_patch16_224_clip_dot",
+                "vit_base_patch16_224_mae_dot",
+                "vit_base_patch14_224_dinov2_dot",
+            }:
+                model = timm.create_model(args["backbone_type"], pretrained=True, num_classes=0)
+                model.out_dim = 768
+                return model.eval()
             elif name == "pretrained_vit_s16_224_supweak_dot" or name == "vit_small_patch16_224_supweak_dot":
                 model = timm.create_model("vit_small_patch16_224_supweak_dot",pretrained=True, num_classes=0)
                 model.out_dim = 384
@@ -62,7 +87,7 @@ def get_backbone(args, pretrained=False):
             from backbone import vit_dot_l2p
             model = timm.create_model(
                 args["backbone_type"],
-                pretrained=args["pretrained"],
+                pretrained=args.get("pretrained", True),
                 num_classes=args["nb_classes"],
                 drop_rate=args["drop"],
                 drop_path_rate=args["drop_path"],
@@ -76,6 +101,7 @@ def get_backbone(args, pretrained=False):
                 top_k=args["top_k"],
                 batchwise_prompt=args["batchwise_prompt"],
                 prompt_key_init=args["prompt_key_init"],
+                global_pool=args.get("global_pool", "token"),
                 head_type=args["head_type"],
                 use_prompt_mask=args["use_prompt_mask"],
             )
@@ -131,9 +157,8 @@ def get_backbone(args, pretrained=False):
         ffn_num = args["ffn_num"]
         if args["model_name"] == "aper_adapter" or args["model_name"] == "ranpac" or args["model_name"] == "fecam":
             from backbone import vit_adapter
-            from easydict import EasyDict
-            tuning_config = EasyDict(
-                # AdaptFormer
+            from types import SimpleNamespace
+            tuning_config = SimpleNamespace(
                 ffn_adapt=True,
                 ffn_option="parallel",
                 ffn_adapter_layernorm_option="none",
@@ -141,7 +166,6 @@ def get_backbone(args, pretrained=False):
                 ffn_adapter_scalar="0.1",
                 ffn_num=ffn_num,
                 d_model=768,
-                # VPT related
                 vpt_on=False,
                 vpt_num=0,
             )
@@ -151,6 +175,22 @@ def get_backbone(args, pretrained=False):
                 model.out_dim=768
             elif name == "pretrained_vit_b16_224_in21k_adapter":
                 model = vit_adapter.vit_base_patch16_224_in21k_adapter(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_21k_ibot_adapter":
+                model = vit_adapter.vit_base_patch16_224_21k_ibot_adapter(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_clip_adapter":
+                model = vit_adapter.vit_base_patch16_224_clip_adapter(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_mae_adapter":
+                model = vit_adapter.vit_base_patch16_224_mae_adapter(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b14_224_dinov2_adapter":
+                model = vit_adapter.vit_base_patch14_224_dinov2_adapter(pretrained=args.get("pretrained", True), num_classes=0,
                     global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
                 model.out_dim=768
             else:
@@ -164,7 +204,7 @@ def get_backbone(args, pretrained=False):
             from backbone import vit_l2p
             model = timm.create_model(
                 args["backbone_type"],
-                pretrained=args["pretrained"],
+                pretrained=args.get("pretrained", True),
                 num_classes=args["nb_classes"],
                 drop_rate=args["drop"],
                 drop_path_rate=args["drop_path"],
@@ -178,6 +218,7 @@ def get_backbone(args, pretrained=False):
                 top_k=args["top_k"],
                 batchwise_prompt=args["batchwise_prompt"],
                 prompt_key_init=args["prompt_key_init"],
+                global_pool=args.get("global_pool", "token"),
                 head_type=args["head_type"],
                 use_prompt_mask=args["use_prompt_mask"],
             )
@@ -190,7 +231,7 @@ def get_backbone(args, pretrained=False):
             from backbone import vit_dualprompt
             model = timm.create_model(
                 args["backbone_type"],
-                pretrained=args["pretrained"],
+                pretrained=args.get("pretrained", True),
                 num_classes=args["nb_classes"],
                 drop_rate=args["drop"],
                 drop_path_rate=args["drop_path"],
@@ -204,6 +245,7 @@ def get_backbone(args, pretrained=False):
                 top_k=args["top_k"],
                 batchwise_prompt=args["batchwise_prompt"],
                 prompt_key_init=args["prompt_key_init"],
+                global_pool=args.get("global_pool", "token"),
                 head_type=args["head_type"],
                 use_prompt_mask=args["use_prompt_mask"],
                 use_g_prompt=args["use_g_prompt"],
@@ -230,7 +272,7 @@ def get_backbone(args, pretrained=False):
     elif '_coda_prompt' in name:
         if args["model_name"] == "coda_prompt":
             from backbone import vit_coda_promtpt
-            model = timm.create_model(args["backbone_type"], pretrained=args["pretrained"])
+            model = timm.create_model(args["backbone_type"], pretrained=args.get("pretrained", True))
             # model = vision_transformer_coda_prompt.VisionTransformer(img_size=224, patch_size=16, embed_dim=768, depth=12,
             #                 num_heads=12, ckpt_layer=0,
             #                 drop_path_rate=0)
@@ -273,7 +315,7 @@ def get_backbone(args, pretrained=False):
             raise NotImplementedError("Inconsistent model name and model type")
     elif '_lae' in name:
         from backbone import vit_lae
-        model = timm.create_model(args["backbone_type"], pretrained=True)
+        model = timm.create_model(args["backbone_type"], pretrained=args.get("pretrained", True))
         return model
     elif '_mos' in name:
         ffn_num = args["ffn_num"]
@@ -701,7 +743,7 @@ class PromptVitNet(nn.Module):
     def get_original_backbone(self, args):
         return timm.create_model(
             args["backbone_type"],
-            pretrained=args["pretrained"],
+            pretrained=args.get("pretrained", True),
             num_classes=args["nb_classes"],
             drop_rate=args["drop"],
             drop_path_rate=args["drop_path"],
@@ -744,10 +786,10 @@ class SPromptVitNet(nn.Module):
     def __init__(self, args:dict, pretrained:bool):
         super(SPromptVitNet, self).__init__()
 
-        from backbone.vit_sprompt import _create_vision_transformer
+        from backbone import vit_sprompt
 
-        model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12)
-        self.image_encoder =_create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **model_kwargs)
+        model_name = args.get("backbone_type", "vit_base_patch16_224")
+        self.image_encoder = timm.create_model(model_name, pretrained=pretrained)
 
         self.class_num = args["nb_classes"]
         self.total_sessions = args["nb_tasks"]

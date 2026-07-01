@@ -42,6 +42,12 @@ from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_n
 from timm.models.registry import register_model
 
 from backbone.prompt import Prompt
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -333,7 +339,7 @@ class VisionTransformer(nn.Module):
     def __init__(
             self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None,
-            class_token=True, no_embed_class=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
+            class_token=True, no_embed_class=False, pre_norm=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
             weight_init='', embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,
             prompt_length=None, embedding_key='cls', prompt_init='uniform', prompt_pool=False, prompt_key=False, pool_size=None,
             top_k=None, batchwise_prompt=False, prompt_key_init='uniform', head_type='token', use_prompt_mask=False,):
@@ -388,6 +394,7 @@ class VisionTransformer(nn.Module):
             embed_len += prompt_length * top_k
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * .02)
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         self.prompt_pool = prompt_pool
         self.head_type = head_type
@@ -477,6 +484,7 @@ class VisionTransformer(nn.Module):
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
         
         x = self.pos_drop(x + self.pos_embed)
+        x = self.norm_pre(x)
 
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
@@ -493,7 +501,7 @@ class VisionTransformer(nn.Module):
         if self.class_token and self.head_type == 'token':
             x = x[:, 0]
         elif self.head_type == 'gap' and self.global_pool == 'avg':
-            x = x.mean(dim=1)
+            x = x[:, self.num_prefix_tokens:].mean(dim=1) if self.num_prefix_tokens else x.mean(dim=1)
         elif self.head_type == 'prompt' and self.prompt_pool:
             x = x[:, 1:(1 + self.total_prompt_len)] if self.class_token else x[:, 0:self.total_prompt_len]
             x = x.mean(dim=1)
@@ -814,6 +822,42 @@ def vit_base_patch16_224_l2p(pretrained=False, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        pre_norm=True, norm_layer=nn.LayerNorm, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
     return model
 
 

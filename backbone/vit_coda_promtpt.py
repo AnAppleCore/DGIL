@@ -15,6 +15,12 @@ from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_, DropPath
 from timm.models.helpers import build_model_with_cfg, resolve_pretrained_cfg, named_apply, adapt_input_conv, checkpoint_seq
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -238,24 +244,35 @@ class Attention(nn.Module):
         return x
 
 
+class LayerScale(nn.Module):
+    def __init__(self, dim, init_values=1e-5, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x):
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
+
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, init_values=None):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
 
 
     def forward(self, x, register_hook=False, prompt=None):
-        x = x + self.drop_path(self.attn(self.norm1(x), register_hook=register_hook, prompt=prompt))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x), register_hook=register_hook, prompt=prompt)))
+        x = x + self.drop_path(self.ls2(self.mlp(self.norm2(x))))
         return x
 
     
@@ -266,8 +283,8 @@ class VisionTransformer(nn.Module):
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, representation_size=None,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None, 
-                 ckpt_layer=0):
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., norm_layer=None,
+                 ckpt_layer=0, pre_norm=False, init_values=None):
         """
         Args:
             img_size (int, tuple): input image size
@@ -298,12 +315,14 @@ class VisionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
+                init_values=init_values,
                 )
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
@@ -334,6 +353,7 @@ class VisionTransformer(nn.Module):
   
         x = x + self.pos_embed[:,:x.size(1),:]
         x = self.pos_drop(x)
+        x = self.norm_pre(x)
 
         prompt_loss = torch.zeros((1,), requires_grad=True).to(device=x.device)
         for i,blk in enumerate(self.blocks):
@@ -898,6 +918,44 @@ def vit_base_patch16_224_miil_coda_prompt(pretrained=False, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, qkv_bias=False, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224_miil', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_coda_prompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_coda_prompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_coda_prompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_coda_prompt(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch14_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
     return model
 
 

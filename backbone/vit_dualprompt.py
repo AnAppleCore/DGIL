@@ -42,6 +42,12 @@ from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_n
 from timm.models.registry import register_model
 
 from backbone.prompt import EPrompt
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -380,7 +386,8 @@ class VisionTransformer(nn.Module):
             prompt_length=None, embedding_key='cls', prompt_init='uniform', prompt_pool=False, prompt_key=False, pool_size=None,
             top_k=None, batchwise_prompt=False, prompt_key_init='uniform', head_type='token', use_prompt_mask=False,
             use_g_prompt=False, g_prompt_length=None, g_prompt_layer_idx=None, use_prefix_tune_for_g_prompt=False,
-            use_e_prompt=False, e_prompt_layer_idx=None, use_prefix_tune_for_e_prompt=False, same_key_value=False,):
+            use_e_prompt=False, e_prompt_layer_idx=None, use_prefix_tune_for_e_prompt=False, same_key_value=False,
+            pre_norm=False,):
         """
         Args:
             img_size (int, tuple): input image size
@@ -430,6 +437,7 @@ class VisionTransformer(nn.Module):
         embed_len = num_patches if no_embed_class else num_patches + self.num_prefix_tokens
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * .02)
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         self.prompt_pool = prompt_pool
         self.head_type = head_type
@@ -564,6 +572,7 @@ class VisionTransformer(nn.Module):
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
         
         x = self.pos_drop(x + self.pos_embed)
+        x = self.norm_pre(x)
 
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
@@ -1215,6 +1224,44 @@ def vit_base_patch16_224_miil_dualprompt(pretrained=False, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, qkv_bias=False, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224_miil', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_dualprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_dualprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_dualprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_dualprompt(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch14_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
     return model
 
 

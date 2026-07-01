@@ -42,6 +42,12 @@ from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_n
 from timm.models.registry import register_model
 
 from backbone.prompt import Prompt
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -333,7 +339,7 @@ class VisionTransformer(nn.Module):
     def __init__(
             self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, global_pool='token',
             embed_dim=768, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None,
-            class_token=True, no_embed_class=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
+            class_token=True, no_embed_class=False, pre_norm=False, fc_norm=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
             weight_init='', embed_layer=PatchEmbed, norm_layer=None, act_layer=None, block_fn=Block,
             prompt_length=None, embedding_key='cls', prompt_init='uniform', prompt_pool=False, prompt_key=False, pool_size=None,
             top_k=None, batchwise_prompt=False, prompt_key_init='uniform', head_type='token', use_prompt_mask=False,):
@@ -388,6 +394,7 @@ class VisionTransformer(nn.Module):
             embed_len += prompt_length * top_k
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * .02)
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         self.prompt_pool = prompt_pool
         self.head_type = head_type
@@ -477,6 +484,7 @@ class VisionTransformer(nn.Module):
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
         
         x = self.pos_drop(x + self.pos_embed)
+        x = self.norm_pre(x)
 
         if self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
@@ -824,6 +832,42 @@ def vit_base_patch16_224_dot_l2p(pretrained=False, **kwargs):
 
 
 @register_model
+def vit_base_patch16_224_21k_ibot_dot_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
+    load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_dot_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=16, embed_dim=768, depth=12, num_heads=12,
+        pre_norm=True, norm_layer=nn.LayerNorm, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_dot_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_dot_l2p(pretrained=False, **kwargs):
+    model_kwargs = dict(
+        patch_size=14, embed_dim=768, depth=12, num_heads=12,
+        init_values=1.0, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
 def vit_base_patch16_384_dot_l2p(pretrained=False, **kwargs):
     """ ViT-Base model (ViT-B/16) from original paper (https://arxiv.org/abs/2010.11929).
     ImageNet-1k weights fine-tuned from in21k @ 384x384, source https://github.com/google-research/vision_transformer.
@@ -1155,46 +1199,6 @@ def vit_base_patch16_18x2_224_dot_l2p(pretrained=False, **kwargs):
     model = _create_vision_transformer('vit_base_patch16_18x2_224', pretrained=pretrained, **model_kwargs)
     return model
 
-
-@register_model
-def vit_base_patch16_224_21k_ibot_dot_l2p(pretrained=False, **kwargs):
-
-    ckpt_path = './checkpoints/ibot_21k_mepo_epoch_0.pth'
-
-    model_kwargs = dict(
-        patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-    model = _create_vision_transformer('vit_base_patch16_224_in21k', pretrained=False, **model_kwargs)
-    state_dict = model.state_dict()
-    s_ckpt = torch.load(ckpt_path, map_location='cpu')['teacher']
-
-    ckpt = {}
-    for key, val in s_ckpt.items():
-        new_key = key.replace('backbone.', '')
-        ckpt[new_key] = val
-
-    not_in_k = [k for k in ckpt.keys() if k not in state_dict]
-    for k in not_in_k:
-        del ckpt[k]
-    
-    if 'pos_embed' in ckpt:
-        pos_embed_checkpoint = ckpt['pos_embed']
-        pos_embed_current = model.pos_embed.data
-        
-        num_patches = model.patch_embed.num_patches
-        num_prefix_tokens = 1 if model.class_token else 0
-        gs_new = (int(math.sqrt(num_patches)), int(math.sqrt(num_patches)))
-        
-        new_pos_embed = resize_pos_embed(
-            pos_embed_checkpoint, 
-            pos_embed_current,
-            num_prefix_tokens=num_prefix_tokens,
-            gs_new=gs_new
-        )
-        ckpt['pos_embed'] = new_pos_embed
-
-    msg = model.load_state_dict(ckpt, strict=False)
-    _logger.info(f"Loaded iBOT-21K weights from {ckpt_path}")
-    return model
 
 @register_model
 def vit_small_patch16_224_supweak_dot_l2p(pretrained=False, **kwargs):

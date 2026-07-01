@@ -24,7 +24,13 @@ from timm.models.layers import (
     lecun_normal_,
     trunc_normal_,
 )
-from timm.models.layers.helpers import to_2tuple
+from timm.models.layers import to_2tuple
+from backbone.pretrain_loaders import (
+    load_dinov2_vit_b14,
+    load_ibot21k_teacher,
+    load_mae_vit_b16,
+    load_openai_clip_vit_b16,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -914,6 +920,7 @@ class VisionTransformer(nn.Module):
         act_layer=None,
         weight_init="",
         num_classes=0,
+        pre_norm=False,
     ):
         """
         Args:
@@ -957,6 +964,7 @@ class VisionTransformer(nn.Module):
             torch.zeros(1, num_patches + self.num_tokens, embed_dim)
         )
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         # stochastic depth decay rule
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -1014,6 +1022,7 @@ class VisionTransformer(nn.Module):
             dist_token = self.dist_token.expand(x.shape[0], -1, -1)
             x = torch.cat((cls_token, dist_token, x), dim=1)
         x = self.pos_drop(x + self.pos_embed)
+        x = self.norm_pre(x)
 
         x = self.blocks(x)
         x = self.norm(x)
@@ -1599,6 +1608,42 @@ def vit_base_patch16_224_miil_lae(pretrained=False, **kwargs):
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, qkv_bias=False, **kwargs)
     model = _create_vision_transformer('vit_base_patch16_224_miil', pretrained=pretrained, **model_kwargs)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_21k_ibot_lae(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_ibot21k_teacher(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_clip_lae(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, pre_norm=True, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_openai_clip_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch16_224_mae_lae(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch16_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_mae_vit_b16(model, resize_pos_embed=resize_pos_embed)
+    return model
+
+
+@register_model
+def vit_base_patch14_224_dinov2_lae(pretrained=False, **kwargs):
+    model_kwargs = dict(patch_size=14, embed_dim=768, depth=12, num_heads=12, **kwargs)
+    model = _create_vision_transformer('vit_base_patch14_224', pretrained=False, **model_kwargs)
+    if pretrained:
+        load_dinov2_vit_b14(model, resize_pos_embed=resize_pos_embed)
     return model
 
 

@@ -25,6 +25,155 @@ import logging
 import os
 from collections import OrderedDict
 import torch
+from backbone.pretrain_loaders import _load_torch_file
+
+
+
+def _resize_pos_embed_adapter(pos_embed, model):
+    if pos_embed.ndim == 2:
+        pos_embed = pos_embed.unsqueeze(0)
+    if tuple(pos_embed.shape) == tuple(model.pos_embed.shape):
+        return pos_embed
+
+    num_prefix_tokens = getattr(model, "num_tokens", 1)
+    posemb_prefix = pos_embed[:, :num_prefix_tokens]
+    posemb_grid = pos_embed[:, num_prefix_tokens:]
+    old_size = int(math.sqrt(posemb_grid.shape[1]))
+    new_grid_size = model.patch_embed.grid_size
+    if isinstance(new_grid_size, tuple):
+        new_h, new_w = new_grid_size
+    else:
+        new_h = new_w = int(new_grid_size)
+    posemb_grid = posemb_grid.reshape(1, old_size, old_size, -1).permute(0, 3, 1, 2)
+    posemb_grid = torch.nn.functional.interpolate(
+        posemb_grid,
+        size=(new_h, new_w),
+        mode="bicubic",
+        align_corners=False,
+    )
+    posemb_grid = posemb_grid.permute(0, 2, 3, 1).reshape(1, new_h * new_w, -1)
+    return torch.cat([posemb_prefix, posemb_grid], dim=1)
+
+
+
+def _filter_to_model(state_dict, model):
+    model_state = model.state_dict()
+    filtered = OrderedDict()
+    for key, value in state_dict.items():
+        if key in model_state and tuple(value.shape) == tuple(model_state[key].shape):
+            filtered[key] = value.float() if torch.is_floating_point(value) else value
+    return filtered
+
+
+
+def _convert_standard_vit_to_adapter(state_dict):
+    converted = OrderedDict()
+    for key, value in state_dict.items():
+        if key.startswith("head.") or key.startswith("decoder_") or key in {"mask_token"} or key.startswith("register_tokens"):
+            continue
+        if ".attn.qkv.weight" in key:
+            q_weight, k_weight, v_weight = value.chunk(3, dim=0)
+            converted[key.replace("qkv.weight", "q_proj.weight")] = q_weight
+            converted[key.replace("qkv.weight", "k_proj.weight")] = k_weight
+            converted[key.replace("qkv.weight", "v_proj.weight")] = v_weight
+        elif ".attn.qkv.bias" in key:
+            q_bias, k_bias, v_bias = value.chunk(3, dim=0)
+            converted[key.replace("qkv.bias", "q_proj.bias")] = q_bias
+            converted[key.replace("qkv.bias", "k_proj.bias")] = k_bias
+            converted[key.replace("qkv.bias", "v_proj.bias")] = v_bias
+        elif ".mlp.fc" in key:
+            converted[key.replace(".mlp.", ".")] = value
+        else:
+            converted[key] = value
+    return converted
+
+
+
+def _load_and_freeze_adapter(model, state_dict):
+    state_dict = _convert_standard_vit_to_adapter(state_dict)
+    if "pos_embed" in state_dict:
+        state_dict["pos_embed"] = _resize_pos_embed_adapter(state_dict["pos_embed"], model)
+    filtered = _filter_to_model(state_dict, model)
+    msg = model.load_state_dict(filtered, strict=False)
+    print(msg)
+    for name, p in model.named_parameters():
+        p.requires_grad = name in msg.missing_keys
+    return model
+
+
+
+def _load_ibot21k_adapter(model, checkpoint_path="checkpoints/checkpoint.pth"):
+    obj = _load_torch_file(checkpoint_path)
+    state = OrderedDict()
+    for key, value in obj["teacher"].items():
+        state[key.replace("backbone.", "")] = value
+    return _load_and_freeze_adapter(model, state)
+
+
+
+def _load_mae_adapter(model, checkpoint_path="checkpoints/mae_pretrain_vit_b.pth"):
+    obj = _load_torch_file(checkpoint_path)
+    state = obj.get("model", obj) if isinstance(obj, dict) else obj
+    return _load_and_freeze_adapter(model, state)
+
+
+
+def _load_dinov2_adapter(model, checkpoint_path="checkpoints/dinov2_vitb14_pretrain.pth"):
+    state = _load_torch_file(checkpoint_path)
+    state = state.get("model", state) if isinstance(state, dict) else state
+    return _load_and_freeze_adapter(model, state)
+
+
+
+def _load_openai_clip_adapter(model, checkpoint_path="checkpoints/ViT-B-16.pt"):
+    clip_model = torch.jit.load(checkpoint_path, map_location="cpu")
+    raw_state = clip_model.state_dict()
+    del clip_model
+    converted = OrderedDict()
+    for key, value in raw_state.items():
+        if not key.startswith("visual."):
+            continue
+        key = key[len("visual."):]
+        if key == "class_embedding":
+            converted["cls_token"] = value.reshape(1, 1, -1)
+        elif key == "positional_embedding":
+            converted["pos_embed"] = value.reshape(1, value.shape[0], value.shape[1])
+        elif key == "conv1.weight":
+            converted["patch_embed.proj.weight"] = value
+        elif key == "ln_pre.weight":
+            converted["norm_pre.weight"] = value
+        elif key == "ln_pre.bias":
+            converted["norm_pre.bias"] = value
+        elif key == "ln_post.weight":
+            converted["norm.weight"] = value
+        elif key == "ln_post.bias":
+            converted["norm.bias"] = value
+        elif key == "proj":
+            continue
+        elif key.startswith("transformer.resblocks."):
+            parts = key.split(".")
+            block_idx = parts[2]
+            suffix = ".".join(parts[3:])
+            prefix = f"blocks.{block_idx}."
+            suffix = suffix.replace("ln_1", "norm1")
+            suffix = suffix.replace("ln_2", "norm2")
+            suffix = suffix.replace("attn.out_proj", "attn.proj")
+            suffix = suffix.replace("mlp.c_fc", "fc1")
+            suffix = suffix.replace("mlp.c_proj", "fc2")
+            out_key = prefix + suffix
+            if suffix == "attn.in_proj_weight":
+                q_weight, k_weight, v_weight = value.chunk(3, dim=0)
+                converted[prefix + "attn.q_proj.weight"] = q_weight
+                converted[prefix + "attn.k_proj.weight"] = k_weight
+                converted[prefix + "attn.v_proj.weight"] = v_weight
+            elif suffix == "attn.in_proj_bias":
+                q_bias, k_bias, v_bias = value.chunk(3, dim=0)
+                converted[prefix + "attn.q_proj.bias"] = q_bias
+                converted[prefix + "attn.k_proj.bias"] = k_bias
+                converted[prefix + "attn.v_proj.bias"] = v_bias
+            else:
+                converted[out_key] = value
+    return _load_and_freeze_adapter(model, converted)
 
 
 
@@ -137,14 +286,26 @@ class Attention(nn.Module):
         return x
 
 
+class LayerScale(nn.Module):
+    def __init__(self, dim, init_values=1e-5, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+        self.gamma = nn.Parameter(init_values * torch.ones(dim))
+
+    def forward(self, x):
+        return x.mul_(self.gamma) if self.inplace else x * self.gamma
+
+
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, config=None, layer_id=None):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, config=None, layer_id=None,
+                 init_values=None):
         super().__init__()
         self.config = config
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -154,6 +315,7 @@ class Block(nn.Module):
         self.fc2 = nn.Linear(mlp_hidden_dim, dim)
         self.act = act_layer()
         self.mlp_drop = nn.Dropout(drop)
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
 
         if config.ffn_adapt:
             self.adaptmlp = Adapter(self.config, dropout=0.1, bottleneck=config.ffn_num,
@@ -163,13 +325,13 @@ class Block(nn.Module):
                                     )
 
     def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.ls1(self.attn(self.norm1(x))))
         if self.config.ffn_adapt and self.config.ffn_option == 'parallel':
             adapt_x = self.adaptmlp(x, add_residual=False)
 
         residual = x
         x = self.mlp_drop(self.act(self.fc1(self.norm2(x))))
-        x = self.drop_path(self.mlp_drop(self.fc2(x)))
+        x = self.mlp_drop(self.fc2(x))
 
         if self.config.ffn_adapt:
             if self.config.ffn_option == 'sequential':
@@ -179,7 +341,7 @@ class Block(nn.Module):
             else:
                 raise ValueError(self.config.ffn_adapt)
 
-        x = residual + x
+        x = residual + self.drop_path(self.ls2(x))
         return x
 
 
@@ -190,9 +352,9 @@ class VisionTransformer(nn.Module):
     """ Vision Transformer with support for global average pooling
     """
     def __init__(self, global_pool=False, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
-                 num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
+                 num_heads=12, mlp_ratio=4., qkv_bias=True, init_values=None, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None, weight_init='', tuning_config=None):
+                 act_layer=None, weight_init='', tuning_config=None, pre_norm=False):
         super().__init__()
 
 
@@ -212,13 +374,14 @@ class VisionTransformer(nn.Module):
         self.dist_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if distilled else None
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + self.num_tokens, embed_dim))
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.norm_pre = norm_layer(embed_dim) if pre_norm else nn.Identity()
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.Sequential(*[
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,
-                config=tuning_config, layer_id=i,
+                config=tuning_config, layer_id=i, init_values=init_values,
             )
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
@@ -285,6 +448,7 @@ class VisionTransformer(nn.Module):
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
+        x = self.norm_pre(x)
 
         for idx, blk in enumerate(self.blocks):
             if self.tuning_config.vpt_on:
@@ -354,13 +518,49 @@ class VisionTransformer(nn.Module):
 
 
 
+def vit_base_patch16_224_21k_ibot_adapter(pretrained=False, **kwargs):
+    model = VisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        model = _load_ibot21k_adapter(model)
+    return model
+
+
+
+def vit_base_patch16_224_clip_adapter(pretrained=False, **kwargs):
+    model = VisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), pre_norm=True, **kwargs)
+    if pretrained:
+        model = _load_openai_clip_adapter(model)
+    return model
+
+
+
+def vit_base_patch16_224_mae_adapter(pretrained=False, **kwargs):
+    model = VisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        model = _load_mae_adapter(model)
+    return model
+
+
+
+def vit_base_patch14_224_dinov2_adapter(pretrained=False, **kwargs):
+    model = VisionTransformer(patch_size=14, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        init_values=1.0, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    if pretrained:
+        model = _load_dinov2_adapter(model)
+    return model
+
+
+
 def vit_base_patch16_224_adapter(pretrained=False, **kwargs):
     
     model = VisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
 
-    # checkpoint_model = torch.load('./pretrained_models/B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0.npz')
-    checkpoint_model=timm.create_model("vit_base_patch16_224", pretrained=True, num_classes=0)
+    from backbone import vit_dot_slca
+    checkpoint_model = timm.create_model("vit_base_patch16_224_dot", pretrained=True, num_classes=0)
     state_dict = checkpoint_model.state_dict()
     # modify the checkpoint state dict to match the model
     # first, split qkv weight into q, k, v
@@ -416,8 +616,8 @@ def vit_base_patch16_224_in21k_adapter(pretrained=False, **kwargs):
     model = VisionTransformer(patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
 
-    # checkpoint_model = torch.load('./pretrained_models/B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0.npz')
-    checkpoint_model=timm.create_model("vit_base_patch16_224_in21k", pretrained=True, num_classes=0)
+    from backbone import vit_dot_slca
+    checkpoint_model = timm.create_model("vit_base_patch16_224_dot", pretrained=True, num_classes=0)
     state_dict = checkpoint_model.state_dict()
     # modify the checkpoint state dict to match the model
     # first, split qkv weight into q, k, v
