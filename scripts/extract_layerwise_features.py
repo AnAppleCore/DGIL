@@ -109,7 +109,7 @@ def main():
     if args.feature_source == "slca_trained" and not args.checkpoint_path:
         raise ValueError("--checkpoint-path is required when --feature-source=slca_trained")
 
-    os.environ.setdefault("DGIL_DATA_ROOT", "/data2/datasets")
+    os.environ.setdefault("DGIL_DATA_ROOT", "/data/datasets")
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", str(args.device))
     torch_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 

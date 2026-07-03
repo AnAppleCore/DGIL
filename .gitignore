@@ -169,6 +169,7 @@ configs/Tune
 data/
 imgs/
 logs/
+results
 results/
 
 *.pdf

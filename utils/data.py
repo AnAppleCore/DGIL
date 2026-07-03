@@ -6,7 +6,7 @@ from torchvision.transforms import InterpolationMode
 
 from utils.toolkit import split_images_labels, split_train_val
 
-DATA_ROOT = os.environ.get("DGIL_DATA_ROOT", "/data2/datasets")
+DATA_ROOT = os.environ.get("DGIL_DATA_ROOT", "/data/datasets")
 
 
 def dataset_path(*parts):

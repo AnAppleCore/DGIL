@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import matplotlib
@@ -9,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-ROOT = Path("/data2/hongwei/DGIL/results/layer_probe_slca_trained")
+ROOT = Path(os.environ.get("DGIL_LAYER_PROBE_ROOT", "results/layer_probe_slca_trained")).resolve()
 OUT = ROOT / "figures" / "seed1994_final"
 OUT.mkdir(parents=True, exist_ok=True)
 
