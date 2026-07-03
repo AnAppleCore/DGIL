@@ -8,6 +8,7 @@ from utils.data_manager import DataManager
 from utils.domain_data_manager import DomainDataManager
 from utils.toolkit import count_parameters, StderrToLoggerHandler
 import os
+import json
 import numpy as np
 
 
@@ -217,6 +218,9 @@ def _train(args:dict):
 
         model.after_task()
 
+    if args.get("save_final_checkpoint", False):
+        _save_final_checkpoint(args, model)
+
     if args.get('print_forget', False):
         # report global accuracy matrix and forgetting
         if len(cnn_matrix) > 0:
@@ -261,6 +265,65 @@ def _train(args:dict):
                     forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
                     logging.info('Domain [{}] {}: Accuracy Matrix (NME): \n{}'.format(domain_id, domain_name, np_acctable))
                     logging.info('Domain [{}] {}: Forgetting (NME): {}'.format(domain_id, domain_name, forgetting))
+
+
+def _json_safe(value):
+    if isinstance(value, torch.device):
+        return str(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return value
+
+
+def _safe_backbone_name(backbone_type):
+    return str(backbone_type).replace("/", "_").replace(" ", "_")
+
+
+def _save_final_checkpoint(args, model):
+    checkpoint_root = args.get("checkpoint_dir", "results/layer_probe_slca_trained/checkpoints")
+    checkpoint_dir = os.path.join(
+        checkpoint_root,
+        str(args["dataset"]),
+        _safe_backbone_name(args["backbone_type"]),
+        "seed{}".format(args["seed"]),
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_dir, "final.pkl")
+    tmp_path = checkpoint_path + ".tmp"
+    network = model._network.module if hasattr(model._network, "module") else model._network
+    state_dict = {k: v.detach().cpu() for k, v in network.state_dict().items()}
+    payload = {
+        "checkpoint_type": "final_slca_dgil",
+        "model_state_dict": state_dict,
+        "tasks": int(model._cur_task),
+        "known_classes": int(getattr(model, "_known_classes", -1)),
+        "total_classes": int(getattr(model, "_total_classes", -1)),
+        "dataset": args["dataset"],
+        "backbone_type": args["backbone_type"],
+        "model_name": args["model_name"],
+        "seed": int(args["seed"]),
+        "nb_classes": int(args.get("nb_classes", -1)),
+        "nb_tasks": int(args.get("nb_tasks", -1)),
+        "num_domains": int(args.get("num_domains", 1)),
+        "args": _json_safe(args),
+    }
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, checkpoint_path)
+    meta_path = os.path.join(checkpoint_dir, "final_summary.json")
+    meta_payload = {k: v for k, v in payload.items() if k != "model_state_dict"}
+    with open(meta_path + ".tmp", "w") as f:
+        json.dump(meta_payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(meta_path + ".tmp", meta_path)
+    logging.info("Saved final checkpoint: {}".format(checkpoint_path))
 
 
 def _set_device(args):
