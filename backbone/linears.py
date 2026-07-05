@@ -37,6 +37,48 @@ class SimpleLinear(nn.Module):
         return {'logits': F.linear(input, self.weight, self.bias)}
 
 
+class MahalanobisLinear(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        rank=64,
+        score_sign="negative",
+        scale=1.0,
+        normalize_input=False,
+        init_std=None,
+    ):
+        super(MahalanobisLinear, self).__init__()
+        if score_sign not in {"negative", "positive"}:
+            raise ValueError(f"Unknown Mahalanobis score sign: {score_sign}")
+        self.in_features = in_features
+        self.out_features = out_features
+        self.rank = rank
+        self.score_sign = score_sign
+        self.scale = scale
+        self.normalize_input = normalize_input
+        self.init_std = init_std
+        self.metric = nn.Parameter(torch.Tensor(out_features, rank, in_features))
+        self.bias = nn.Parameter(torch.Tensor(out_features, rank))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        init_std = self.init_std if self.init_std is not None else 1.0 / math.sqrt(self.in_features)
+        nn.init.normal_(self.metric, mean=0.0, std=init_std)
+        nn.init.constant_(self.bias, 0)
+
+    def forward(self, input):
+        if self.normalize_input:
+            input = F.normalize(input, p=2, dim=-1)
+        projected = torch.einsum("bd,crd->bcr", input, self.metric)
+        distances = torch.sum((projected - self.bias.unsqueeze(0)) ** 2, dim=-1)
+        if self.score_sign == "negative":
+            logits = -distances
+        else:
+            logits = distances
+        return {"logits": logits * self.scale, "distances": distances}
+
+
 class CosineLinear(nn.Module):
     def __init__(self, in_features, out_features, nb_proxy=1, to_reduce=False, sigma=True):
         super(CosineLinear, self).__init__()

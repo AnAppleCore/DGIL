@@ -9,8 +9,8 @@ from timm.models.layers import Mlp
 from torch import nn
 
 from backbone.linears import (CosineLinear, EaseCosineLinear,
-                              SimpleContinualLinear, SimpleLinear,
-                              SplitCosineLinear)
+                              MahalanobisLinear, SimpleContinualLinear,
+                              SimpleLinear, SplitCosineLinear)
 from backbone.module import *
 from backbone.prompt import CodaPrompt
 
@@ -149,6 +149,51 @@ def get_backbone(args, pretrained=False):
             prompt_state_dict = model.obtain_prompt()
             model.load_prompt(prompt_state_dict)
             model.out_dim = 768
+            return model.eval()
+        else:
+            raise NotImplementedError("Inconsistent model name and model type")
+
+    elif '_cmoa' in name:
+        ffn_num = args["ffn_num"]
+        if args["model_name"] == "cmoa":
+            from backbone import vit_cmoa
+            from types import SimpleNamespace
+            tuning_config = SimpleNamespace(
+                ffn_adapt=True,
+                ffn_option="parallel",
+                ffn_adapter_layernorm_option="none",
+                ffn_adapter_init_option="lora",
+                ffn_adapter_scalar=str(args.get("adapter_scalar", "0.1")),
+                ffn_num=ffn_num,
+                d_model=768,
+                vpt_on=False,
+                vpt_num=0,
+                moa_num_adapters=args.get("moa_num_adapters", 4),
+                moa_cosine_gamma=args.get("moa_cosine_gamma", 0.0),
+                moa_dropout=args.get("moa_dropout", 0.1),
+            )
+            if name == "pretrained_vit_b16_224_cmoa":
+                model = vit_cmoa.vit_base_patch16_224_cmoa(num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_21k_ibot_cmoa":
+                model = vit_cmoa.vit_base_patch16_224_21k_ibot_cmoa(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_clip_cmoa":
+                model = vit_cmoa.vit_base_patch16_224_clip_cmoa(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b16_224_mae_cmoa":
+                model = vit_cmoa.vit_base_patch16_224_mae_cmoa(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            elif name == "pretrained_vit_b14_224_dinov2_cmoa":
+                model = vit_cmoa.vit_base_patch14_224_dinov2_cmoa(pretrained=args.get("pretrained", True), num_classes=0,
+                    global_pool=False, drop_path_rate=0.0, tuning_config=tuning_config)
+                model.out_dim=768
+            else:
+                raise NotImplementedError("Unknown type {}".format(name))
             return model.eval()
         else:
             raise NotImplementedError("Inconsistent model name and model type")
@@ -409,6 +454,83 @@ class BaseNet(nn.Module):
         self.eval()
 
         return self
+
+
+class MSLNet(BaseNet):
+    def __init__(self, args, pretrained):
+        super().__init__(args, pretrained)
+        self.msl_rank = args.get("msl_rank", 64)
+        self.msl_score_sign = args.get("msl_score_sign", "negative")
+        self.msl_scale = args.get("msl_scale", 1.0 / self.msl_rank)
+        self.msl_normalize_input = args.get("msl_normalize_input", False)
+        self.msl_init_std = args.get("msl_init_std", None)
+
+    def update_fc(self, nb_classes):
+        fc = self.generate_fc(self.feature_dim, nb_classes).to(self._device)
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            fc.metric.data[:nb_output] = copy.deepcopy(self.fc.metric.data)
+            fc.bias.data[:nb_output] = copy.deepcopy(self.fc.bias.data)
+        del self.fc
+        self.fc = fc
+
+    def generate_fc(self, in_dim, out_dim):
+        return MahalanobisLinear(
+            in_dim,
+            out_dim,
+            rank=self.msl_rank,
+            score_sign=self.msl_score_sign,
+            scale=self.msl_scale,
+            normalize_input=self.msl_normalize_input,
+            init_std=self.msl_init_std,
+        )
+
+    def extract_vector(self, x):
+        if self.model_type == 'cnn':
+            return self.backbone(x)['features']
+        return self.backbone(x)
+
+    def forward(self, x):
+        if self.model_type == 'cnn':
+            features = self.backbone(x)["features"]
+        else:
+            features = self.backbone(x)
+        out = self.fc(features)
+        out.update({"features": features, "pre_logits": features})
+        return out
+
+
+class CMoANet(BaseNet):
+    def __init__(self, args, pretrained):
+        super().__init__(args, pretrained)
+
+    def update_fc(self, nb_classes):
+        fc = self.generate_fc(self.feature_dim, nb_classes).to(self._device)
+        if self.fc is not None:
+            nb_output = self.fc.out_features
+            weight = copy.deepcopy(self.fc.weight.data)
+            fc.sigma.data = self.fc.sigma.data
+            weight = torch.cat([weight, torch.zeros(nb_classes - nb_output, self.feature_dim).to(self._device)])
+            fc.weight = nn.Parameter(weight)
+        del self.fc
+        self.fc = fc
+
+    def generate_fc(self, in_dim, out_dim):
+        return CosineLinear(in_dim, out_dim)
+
+    def get_moa_loss(self):
+        if hasattr(self.backbone, "get_moa_loss"):
+            return self.backbone.get_moa_loss()
+        return next(self.parameters()).new_tensor(0.0)
+
+    def extract_vector(self, x):
+        return self.backbone(x)
+
+    def forward(self, x):
+        features = self.backbone(x)
+        out = self.fc(features)
+        out.update({"features": features, "moa_loss": self.get_moa_loss()})
+        return out
 
 
 class IncrementalNet(BaseNet):
