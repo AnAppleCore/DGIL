@@ -741,6 +741,9 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
+        pretrained_custom_load=bool(
+            pretrained and local_default_cfg and local_default_cfg.get('url', '').endswith('.npz')
+        ),
         pretrained_filter_fn=checkpoint_filter_fn,
         **kwargs)
     return model

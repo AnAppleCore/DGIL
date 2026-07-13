@@ -87,28 +87,50 @@ class Learner(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        task_size = data_manager.get_task_size(self._cur_task)
-        self.task_sizes.append(task_size)
-        self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
-        if self.ca_epochs > 0:
-            self._network.update_head(task_size)
-        try:
-            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
-        except:
-            self._cur_domain = 0
-        for c_id in range(self._known_classes, self._total_classes):
-            self.cls_to_task_id[c_id] = self._cur_task
-            self.cls_to_domain_id[c_id] = self._cur_domain
+        if self.args.get("domain_incremental", False):
+            task_size = data_manager.nb_classes if self._cur_task == 0 else 0
+            self.task_sizes.append(data_manager.nb_classes if self._cur_task == 0 else 0)
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            if self.ca_epochs > 0 and self._cur_task == 0:
+                self._network.update_head(self._total_classes)
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except:
+                self._cur_domain = 0
             if self._cur_domain not in self.domain_id_to_cls:
                 self.domain_id_to_cls[self._cur_domain] = []
-            self.domain_id_to_cls[self._cur_domain].append(c_id)
-        logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            for c_id in range(self._total_classes):
+                self.cls_to_task_id[c_id] = 0
+                self.cls_to_domain_id[c_id] = self._cur_domain
+                if c_id not in self.domain_id_to_cls[self._cur_domain]:
+                    self.domain_id_to_cls[self._cur_domain].append(c_id)
+            logging.info("Domain-incremental task {} on fixed classes 0-{}".format(self._cur_task, self._total_classes))
+            train_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, mode="train", source="train")
+            test_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, mode="test", source="test")
+        else:
+            task_size = data_manager.get_task_size(self._cur_task)
+            self.task_sizes.append(task_size)
+            self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
+            if self.ca_epochs > 0:
+                self._network.update_head(task_size)
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except:
+                self._cur_domain = 0
+            for c_id in range(self._known_classes, self._total_classes):
+                self.cls_to_task_id[c_id] = self._cur_task
+                self.cls_to_domain_id[c_id] = self._cur_domain
+                if self._cur_domain not in self.domain_id_to_cls:
+                    self.domain_id_to_cls[self._cur_domain] = []
+                self.domain_id_to_cls[self._cur_domain].append(c_id)
+            logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train")
+            test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
 
-        train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train")
         self.train_dataset = train_dataset
         self.data_manager = data_manager
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
-        test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
 
         if len(self._multiple_gpus) > 1:
@@ -236,7 +258,8 @@ class Learner(BaseLearner):
             
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
-                logits[:, :self._known_classes] = float('-inf')
+                if not self.args.get("domain_incremental", False):
+                    logits[:, :self._known_classes] = float('-inf')
                 features = output['pre_logits']
 
                 loss = F.cross_entropy(logits, targets.long())
@@ -301,9 +324,16 @@ class Learner(BaseLearner):
         #     self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
         
         all_features = []
-        for class_idx in range(self._known_classes, self._total_classes):
-            data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
-                                                                  mode='test', ret_data=True)
+        class_start = 0 if self.args.get("domain_incremental", False) else self._known_classes
+        domain_id = [d for group in data_manager.domain_groups[:self._cur_task + 1] for d in group] if self.args.get("domain_incremental", False) else None
+        for class_idx in range(class_start, self._total_classes):
+            if self.args.get("domain_incremental", False):
+                data, targets, idx_dataset = data_manager.get_domain_dataset(
+                    np.arange(class_idx, class_idx+1), source='train', mode='test', domain_id=domain_id, ret_data=True
+                )
+            else:
+                data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
+                                                                      mode='test', ret_data=True)
             idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
             if self.dot_epochs > 0:
                 vectors, features, _ = self._extract_layerwise_vectors(idx_loader, task_id=self._cur_task, train=True)
@@ -337,7 +367,7 @@ class Learner(BaseLearner):
             
             self.cls_dists[class_idx] = cls_dist
 
-        logging.info('Compute distributions for classes {}-{}'.format(self._known_classes, self._total_classes))
+        logging.info('Compute distributions for classes {}-{}'.format(class_start, self._total_classes))
 
         if self.dot_epochs > 0:
             all_features = np.concatenate(all_features, axis=0) # [num_samples, num_layers, feature_dim]
@@ -619,9 +649,10 @@ class Learner(BaseLearner):
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs, task_id=self._cur_task)["logits"][:, :self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = self._network(inputs, task_id=self._cur_task)["logits"][:, :eval_classes]
             predicts = torch.topk(
-                outputs, k=self.topk, dim=1, largest=True, sorted=True
+                outputs, k=min(self.topk, outputs.shape[1]), dim=1, largest=True, sorted=True
             )[
                 1
             ]  # [bs, topk]
@@ -636,7 +667,8 @@ class Learner(BaseLearner):
         for i, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = model(inputs, task_id=self._cur_task)["logits"][:, :self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = model(inputs, task_id=self._cur_task)["logits"][:, :eval_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)

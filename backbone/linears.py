@@ -59,7 +59,7 @@ class MahalanobisLinear(nn.Module):
         self.normalize_input = normalize_input
         self.init_std = init_std
         self.metric = nn.Parameter(torch.Tensor(out_features, rank, in_features))
-        self.bias = nn.Parameter(torch.Tensor(out_features, rank))
+        self.bias = nn.Parameter(torch.Tensor(out_features, in_features))
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -70,8 +70,9 @@ class MahalanobisLinear(nn.Module):
     def forward(self, input):
         if self.normalize_input:
             input = F.normalize(input, p=2, dim=-1)
-        projected = torch.einsum("bd,crd->bcr", input, self.metric)
-        distances = torch.sum((projected - self.bias.unsqueeze(0)) ** 2, dim=-1)
+        centered = input.unsqueeze(1) - self.bias.unsqueeze(0)
+        projected = torch.einsum("bcd,crd->bcr", centered, self.metric)
+        distances = torch.sum(projected ** 2, dim=-1)
         if self.score_sign == "negative":
             logits = -distances
         else:

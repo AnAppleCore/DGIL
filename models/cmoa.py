@@ -43,30 +43,44 @@ class Learner(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        task_size = data_manager.get_task_size(self._cur_task)
-        self._total_classes = self._known_classes + task_size
-        self.topk = min(self.topk, self._total_classes)
-        self._network.update_fc(self._total_classes)
+        if self.args.get("domain_incremental", False):
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            if self._cur_task == 0:
+                self._network.update_fc(self._total_classes)
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except Exception:
+                self._cur_domain = 0
+            logging.info("Domain-incremental task {} on fixed classes 0-{}".format(self._cur_task, self._total_classes))
+            train_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="train", mode="train")
+            test_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="test", mode="test")
+            proto_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="train", mode="test")
+        else:
+            task_size = data_manager.get_task_size(self._cur_task)
+            self._total_classes = self._known_classes + task_size
+            self.topk = min(self.topk, self._total_classes)
+            self._network.update_fc(self._total_classes)
 
-        try:
-            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
-        except Exception:
-            self._cur_domain = 0
-        logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except Exception:
+                self._cur_domain = 0
+            logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
 
-        appendent = self._get_memory() if self.use_memory else []
-        train_dataset = data_manager.get_dataset(
-            np.arange(self._known_classes, self._total_classes),
-            source="train",
-            mode="train",
-            appendent=appendent,
-        )
-        test_dataset = data_manager.get_dataset(
-            np.arange(0, self._total_classes), source="test", mode="test"
-        )
-        proto_dataset = data_manager.get_dataset(
-            np.arange(self._known_classes, self._total_classes), source="train", mode="test"
-        )
+            appendent = self._get_memory() if self.use_memory else []
+            train_dataset = data_manager.get_dataset(
+                np.arange(self._known_classes, self._total_classes),
+                source="train",
+                mode="train",
+                appendent=appendent,
+            )
+            test_dataset = data_manager.get_dataset(
+                np.arange(0, self._total_classes), source="test", mode="test"
+            )
+            proto_dataset = data_manager.get_dataset(
+                np.arange(self._known_classes, self._total_classes), source="train", mode="test"
+            )
 
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
@@ -101,8 +115,12 @@ class Learner(BaseLearner):
                 outputs = self._network(inputs)
                 logits = outputs["logits"][:, : self._total_classes]
                 features = outputs["features"]
-                cur_logits = logits[:, self._known_classes : self._total_classes]
-                cur_targets = targets - self._known_classes
+                if self.args.get("domain_incremental", False):
+                    cur_logits = logits[:, :self._total_classes]
+                    cur_targets = targets
+                else:
+                    cur_logits = logits[:, self._known_classes : self._total_classes]
+                    cur_targets = targets - self._known_classes
                 loss_ce = F.cross_entropy(cur_logits, cur_targets)
                 loss_cos = outputs.get("moa_loss", logits.new_tensor(0.0))
                 loss_proto = self._prototype_contrastive_loss(features, targets)
@@ -190,7 +208,7 @@ class Learner(BaseLearner):
         return F.cross_entropy(logits, target_positions)
 
     def _distillation_loss(self, logits, inputs):
-        if self._old_network is None or self._known_classes == 0:
+        if self.args.get("domain_incremental", False) or self._old_network is None or self._known_classes == 0:
             return logits.new_tensor(0.0)
         old_network = self._old_network.to(self._device)
         old_network.eval()
@@ -223,11 +241,12 @@ class Learner(BaseLearner):
             new_proto[: self._class_prototypes.size(0)] = self._class_prototypes
             self._class_prototypes = new_proto
 
-        for class_idx in range(self._known_classes, self._total_classes):
+        class_start = 0 if self.args.get("domain_incremental", False) else self._known_classes
+        for class_idx in range(class_start, self._total_classes):
             mask = labels == class_idx
             if torch.any(mask):
                 self._class_prototypes[class_idx] = features[mask].mean(dim=0)
-        logging.info("Updated CMoA prototypes for classes {}-{}".format(self._known_classes, self._total_classes))
+        logging.info("Updated CMoA prototypes for classes {}-{}".format(class_start, self._total_classes))
 
     def _compute_accuracy(self, model, loader):
         model.eval()
@@ -235,7 +254,8 @@ class Learner(BaseLearner):
         for _, inputs, targets in loader:
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = model(inputs)["logits"][:, : self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = model(inputs)["logits"][:, : eval_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)
@@ -247,8 +267,9 @@ class Learner(BaseLearner):
         for _, inputs, targets in loader:
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs)["logits"][:, : self._total_classes]
-            predicts = torch.topk(outputs, k=self.topk, dim=1, largest=True, sorted=True)[1]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = self._network(inputs)["logits"][:, : eval_classes]
+            predicts = torch.topk(outputs, k=min(self.topk, outputs.shape[1]), dim=1, largest=True, sorted=True)[1]
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
         return np.concatenate(y_pred), np.concatenate(y_true)

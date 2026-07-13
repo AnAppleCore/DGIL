@@ -1,6 +1,9 @@
+import csv
 import os
+from collections import Counter, defaultdict
 
 import numpy as np
+import torch
 from torchvision import datasets, transforms
 from torchvision.transforms import InterpolationMode
 
@@ -14,7 +17,8 @@ def dataset_path(*parts):
 
 
 MultiDomainDatasets = [
-    "domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef", "digitsdg", "digitsfive", "core50"
+    "domainnet", "minidomainnet", "officehome", "office31", "officecaltech", "imageclef", "digitsdg", "digitsfive", "core50",
+    "rxrx1_balanced300", "rxrx1_balanced100", "rxrx1_balanced50", "fldr", "camelyon17", "midog25"
 ]
 
 
@@ -28,6 +32,26 @@ class iData(object):
     test_trsf = []
     common_trsf = []
     class_order = None
+
+
+class SelfStandardize(object):
+    def __call__(self, tensor):
+        if not torch.is_tensor(tensor):
+            return tensor
+        mean = tensor.mean(dim=(1, 2), keepdim=True)
+        std = tensor.std(dim=(1, 2), keepdim=True).clamp_min(1e-6)
+        return (tensor - mean) / std
+
+
+class RandomRightAngleRotation(object):
+    def __init__(self, angles=(0, 90, 180, 270)):
+        self.angles = angles
+
+    def __call__(self, image):
+        angle = self.angles[torch.randint(low=0, high=len(self.angles), size=(1,)).item()]
+        if angle == 0:
+            return image
+        return transforms.functional.rotate(image, angle)
 
 
 class iCIFAR10(iData):
@@ -690,3 +714,229 @@ class core50(iData):
             self.train_targets.append(train_targets_d)
             self.test_data.append(test_data_d)
             self.test_targets.append(test_targets_d)
+
+
+class rxrx1_balanced300(iData):
+    selected_class_count = 300
+    use_path = True
+    train_trsf = [
+        transforms.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),
+        RandomRightAngleRotation(),
+        transforms.RandomHorizontalFlip(),
+    ]
+    test_trsf = [
+        transforms.Resize((224, 224), interpolation=InterpolationMode.BICUBIC),
+    ]
+    common_trsf = [transforms.ToTensor(), SelfStandardize()]
+    class_order = np.arange(300).tolist()
+    domain_names = ["rxrx1_g0", "rxrx1_g1", "rxrx1_g2", "rxrx1_g3", "rxrx1_g4"]
+    domain_groups = [
+        ["HEPG2-01", "HEPG2-04", "HEPG2-08", "HEPG2-09", "HUVEC-03", "HUVEC-10", "HUVEC-14", "HUVEC-22", "RPE-01", "RPE-08", "RPE-11"],
+        ["HEPG2-03", "HEPG2-10", "HUVEC-02", "HUVEC-09", "HUVEC-13", "HUVEC-15", "HUVEC-17", "RPE-07", "RPE-10", "U2OS-04"],
+        ["HEPG2-06", "HEPG2-07", "HUVEC-05", "HUVEC-07", "HUVEC-12", "HUVEC-18", "HUVEC-19", "HUVEC-23", "RPE-03", "U2OS-02"],
+        ["HEPG2-02", "HEPG2-05", "HUVEC-04", "HUVEC-06", "HUVEC-11", "HUVEC-20", "RPE-02", "RPE-09", "U2OS-01", "U2OS-05"],
+        ["HEPG2-11", "HUVEC-01", "HUVEC-08", "HUVEC-16", "HUVEC-21", "HUVEC-24", "RPE-04", "RPE-05", "RPE-06", "U2OS-03"],
+    ]
+
+    def download_data(self):
+        root_dir = dataset_path("medical", "rxrx1")
+        metadata_path = os.path.join(root_dir, "metadata.csv")
+        rows = []
+        with open(metadata_path, newline="") as f:
+            for row in csv.DictReader(f):
+                if row.get("well_type") != "treatment":
+                    continue
+                image_path = os.path.join(root_dir, "images", row["experiment"], "Plate" + row["plate"], f"{row['well']}_s{row['site']}.png")
+                if os.path.exists(image_path):
+                    rows.append((row, image_path))
+
+        domain_to_group = {domain: group_id for group_id, domains in enumerate(self.domain_groups) for domain in domains}
+        counts_by_sirna = Counter(row["sirna_id"] for row, _ in rows)
+        shared_sirnas = sorted(counts_by_sirna.keys(), key=lambda x: (-counts_by_sirna[x], int(x)))[:self.selected_class_count]
+        label_map = {sirna_id: label for label, sirna_id in enumerate(shared_sirnas)}
+        self.selected_sirna_ids = shared_sirnas
+
+        grouped = defaultdict(lambda: {"train_data": [], "train_targets": [], "test_data": [], "test_targets": []})
+        for row, image_path in rows:
+            sirna_id = row["sirna_id"]
+            if sirna_id not in label_map or row["experiment"] not in domain_to_group:
+                continue
+            target = label_map[sirna_id]
+            group_id = domain_to_group[row["experiment"]]
+            split = row.get("dataset", "train")
+            if split == "test":
+                grouped[group_id]["test_data"].append(image_path)
+                grouped[group_id]["test_targets"].append(target)
+            else:
+                grouped[group_id]["train_data"].append(image_path)
+                grouped[group_id]["train_targets"].append(target)
+
+        self.train_data, self.train_targets = [], []
+        self.test_data, self.test_targets = [], []
+        for group_id in range(len(self.domain_names)):
+            train_data = np.array(grouped[group_id]["train_data"])
+            train_targets = np.array(grouped[group_id]["train_targets"], dtype=np.int64)
+            test_data = np.array(grouped[group_id]["test_data"])
+            test_targets = np.array(grouped[group_id]["test_targets"], dtype=np.int64)
+            if len(test_data) == 0 and len(train_data) > 0:
+                train_data, train_targets, test_data, test_targets = split_train_val(train_data, train_targets, val_ratio=0.2, seed=42)
+            self.train_data.append(train_data)
+            self.train_targets.append(train_targets)
+            self.test_data.append(test_data)
+            self.test_targets.append(test_targets)
+
+
+class rxrx1_balanced100(rxrx1_balanced300):
+    selected_class_count = 100
+    class_order = np.arange(100).tolist()
+
+
+class rxrx1_balanced50(rxrx1_balanced300):
+    selected_class_count = 50
+    class_order = np.arange(50).tolist()
+
+
+class fldr(iData):
+    use_path = True
+    train_trsf = [
+        transforms.RandomResizedCrop(224, scale=(0.75, 1.0), ratio=(0.9, 1.1)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+    ]
+    test_trsf = [
+        transforms.Resize(256, interpolation=InterpolationMode.BICUBIC),
+        transforms.CenterCrop(224),
+    ]
+    common_trsf = [transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
+    class_order = np.arange(5).tolist()
+    domain_names = ["mBRSET", "APTOS", "IDRiD", "SUSTech-SYSU", "DRD"]
+
+    def _label(self, row):
+        for key in ["label", "diagnosis", "dr_grade", "level", "target", "class"]:
+            if key in row and row[key] != "":
+                return int(float(row[key]))
+        raise KeyError("Cannot find FL-DR label column in {}".format(row.keys()))
+
+    def _image_name(self, row):
+        for key in ["name", "image", "image_id", "img", "filename", "file", "path"]:
+            if key in row and row[key] != "":
+                return row[key]
+        raise KeyError("Cannot find FL-DR image column in {}".format(row.keys()))
+
+    def _read_split(self, domain_dir, split_name):
+        csv_path = os.path.join(domain_dir, f"{split_name}_seed0.csv")
+        data, targets = [], []
+        with open(csv_path, newline="") as f:
+            for row in csv.DictReader(f):
+                image_name = self._image_name(row)
+                image_path = image_name if os.path.isabs(image_name) else os.path.join(domain_dir, "images", image_name)
+                if not os.path.splitext(image_path)[1]:
+                    for ext in [".jpg", ".jpeg", ".png"]:
+                        if os.path.exists(image_path + ext):
+                            image_path = image_path + ext
+                            break
+                if os.path.exists(image_path):
+                    data.append(image_path)
+                    targets.append(self._label(row))
+        return np.array(data), np.array(targets, dtype=np.int64)
+
+    def download_data(self):
+        root_dir = dataset_path("medical", "FL-DR")
+        self.train_data, self.train_targets = [], []
+        self.test_data, self.test_targets = [], []
+        for domain_name in self.domain_names:
+            domain_dir = os.path.join(root_dir, domain_name)
+            train_data, train_targets = self._read_split(domain_dir, "train")
+            val_data, val_targets = self._read_split(domain_dir, "val")
+            test_data, test_targets = self._read_split(domain_dir, "test")
+            if len(val_data) > 0:
+                train_data = np.concatenate([train_data, val_data])
+                train_targets = np.concatenate([train_targets, val_targets])
+            self.train_data.append(train_data)
+            self.train_targets.append(train_targets)
+            self.test_data.append(test_data)
+            self.test_targets.append(test_targets)
+
+
+class camelyon17(iData):
+    use_path = True
+    train_trsf = [
+        transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.02),
+    ]
+    test_trsf = [transforms.Resize(224, interpolation=InterpolationMode.BICUBIC)]
+    common_trsf = [transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
+    class_order = np.arange(2).tolist()
+    domain_names = ["center_0", "center_1", "center_2", "center_3", "center_4"]
+    domain_incremental = True
+
+    def download_data(self):
+        root_dir = dataset_path("medical", "camelyon17")
+        metadata_path = os.path.join(root_dir, "metadata.csv")
+        self.train_data = [[] for _ in self.domain_names]
+        self.train_targets = [[] for _ in self.domain_names]
+        self.test_data = [[] for _ in self.domain_names]
+        self.test_targets = [[] for _ in self.domain_names]
+        with open(metadata_path, newline="") as f:
+            for row in csv.DictReader(f):
+                center = int(row["center"])
+                patient = row["patient"]
+                node = row["node"]
+                x_coord = row["x_coord"]
+                y_coord = row["y_coord"]
+                image_path = os.path.join(root_dir, "patches", f"patient_{patient}_node_{node}", f"patch_patient_{patient}_node_{node}_x_{x_coord}_y_{y_coord}.png")
+                if not os.path.exists(image_path):
+                    continue
+                target = int(row["tumor"])
+                split = int(row["split"])
+                if split == 0:
+                    self.train_data[center].append(image_path)
+                    self.train_targets[center].append(target)
+                else:
+                    self.test_data[center].append(image_path)
+                    self.test_targets[center].append(target)
+        self.train_data = [np.array(x) for x in self.train_data]
+        self.train_targets = [np.array(y, dtype=np.int64) for y in self.train_targets]
+        self.test_data = [np.array(x) for x in self.test_data]
+        self.test_targets = [np.array(y, dtype=np.int64) for y in self.test_targets]
+
+
+class midog25(iData):
+    use_path = True
+    train_trsf = [
+        transforms.RandomResizedCrop(224, scale=(0.75, 1.0)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.1, hue=0.03),
+    ]
+    test_trsf = [transforms.Resize(224, interpolation=InterpolationMode.BICUBIC)]
+    common_trsf = [transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])]
+    class_order = np.arange(2).tolist()
+    domain_incremental = True
+
+    def download_data(self):
+        root_dir = dataset_path("medical", "MIDOG25")
+        image_dir = os.path.join(root_dir, "MIDOG25_Binary_Classification_Train_Set")
+        metadata_path = os.path.join(root_dir, "MIDOG25_Atypical_Classification_Train_Set.csv")
+        scanner_rows = defaultdict(list)
+        with open(metadata_path, newline="") as f:
+            for row in csv.DictReader(f):
+                image_path = os.path.join(image_dir, row["image_id"])
+                if not os.path.exists(image_path):
+                    continue
+                label = 1 if row["majority"].strip().upper() == "AMF" else 0
+                scanner_rows[row["Scanner"]].append((image_path, label))
+
+        self.domain_names = sorted(scanner_rows.keys())
+        self.train_data, self.train_targets = [], []
+        self.test_data, self.test_targets = [], []
+        for scanner in self.domain_names:
+            data = np.array([item[0] for item in scanner_rows[scanner]])
+            targets = np.array([item[1] for item in scanner_rows[scanner]], dtype=np.int64)
+            train_data, train_targets, test_data, test_targets = split_train_val(data, targets, val_ratio=0.3, seed=42)
+            self.train_data.append(train_data)
+            self.train_targets.append(train_targets)
+            self.test_data.append(test_data)
+            self.test_targets.append(test_targets)

@@ -18,7 +18,7 @@
         1995,
         1996
     ],
-    "lrate": 0.00002,
+    "lrate": 0.0001,
     "head_lrscale": 1.0,
     "weight_decay": 0.0005,
     "lrate_decay": 0.1,

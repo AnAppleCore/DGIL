@@ -57,12 +57,15 @@ class BaseLearner(object):
             return self._network.feature_dim
 
     def register_data_info(self, data_manager: Union[DataManager, DomainDataManager] = None):
-        start_class_id = 0
-        end_class_id = -1
-        for _increment in data_manager._increments:
-            start_class_id = end_class_id + 1
-            end_class_id += _increment
-            self._class_id_pairs.append((start_class_id, end_class_id))
+        if self.args.get("domain_incremental", False):
+            self._class_id_pairs = [(0, data_manager.nb_classes - 1) for _ in data_manager._increments]
+        else:
+            start_class_id = 0
+            end_class_id = -1
+            for _increment in data_manager._increments:
+                start_class_id = end_class_id + 1
+                end_class_id += _increment
+                self._class_id_pairs.append((start_class_id, end_class_id))
 
         # For later use, e.g., computing domain-wise task accuracy
         self.data_manager = data_manager
@@ -120,6 +123,22 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
+        if self.args.get("domain_incremental", False):
+            top1 = np.around((y_pred.T[0] == y_true).sum() * 100 / len(y_true), decimals=2)
+            ret["grouped"] = {"total": top1}
+            ret["top1"] = top1
+            for cls_id in np.unique(y_true):
+                cls_idx = np.where(y_true == cls_id)[0]
+                ret["class_{}".format(int(cls_id))] = np.around(
+                    (y_pred.T[0][cls_idx] == y_true[cls_idx]).sum() * 100 / len(cls_idx), decimals=2
+                )
+            ret["balanced_acc"] = np.around(np.mean([ret["class_{}".format(int(cls_id))] for cls_id in np.unique(y_true)]), decimals=2)
+            ret["top{}".format(self.topk)] = np.around(
+                (y_pred.T[:self.topk] == np.tile(y_true, (self.topk, 1))).sum() * 100 / len(y_true),
+                decimals=2,
+            )
+            return ret
+
         grouped = accuracy(y_pred.T[0], y_true, self._known_classes, self.args["init_cls"], self.args["increment"])
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
@@ -158,8 +177,9 @@ class BaseLearner(object):
         return cnn_accy_per_domain, nme_accy_per_domain
     
     def get_domain_test_loader(self, domain_id):
+        eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
         domain_test_dataset = self.data_manager.get_domain_dataset(
-            np.arange(0, self._total_classes), source="test", mode="test", domain_id=domain_id,
+            np.arange(0, eval_classes), source="test", mode="test", domain_id=domain_id,
         )
         domain_test_loader = DataLoader(
             domain_test_dataset, batch_size=batch_size, shuffle=False, num_workers=4
@@ -185,6 +205,8 @@ class BaseLearner(object):
             inputs = inputs.to(self._device)
             with torch.no_grad():
                 outputs = model(inputs)["logits"]
+                if self.args.get("domain_incremental", False):
+                    outputs = outputs[:, :self.data_manager.nb_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)
@@ -198,8 +220,10 @@ class BaseLearner(object):
             inputs = inputs.to(self._device)
             with torch.no_grad():
                 outputs = self._network(inputs)["logits"]
+                if self.args.get("domain_incremental", False):
+                    outputs = outputs[:, :self.data_manager.nb_classes]
             predicts = torch.topk(
-                outputs, k=self.topk, dim=1, largest=True, sorted=True
+                outputs, k=min(self.topk, outputs.shape[1]), dim=1, largest=True, sorted=True
             )[
                 1
             ]  # [bs, topk]

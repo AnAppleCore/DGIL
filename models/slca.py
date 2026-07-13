@@ -46,6 +46,9 @@ class Learner(BaseLearner):
         self._network.fc.recall()
 
     def incremental_train(self, data_manager):
+        if self.args.get("domain_incremental", False):
+            return self._domain_incremental_train(data_manager)
+
         self._cur_task += 1
         task_size = data_manager.get_task_size(self._cur_task)
         self.task_sizes.append(task_size)
@@ -90,6 +93,40 @@ class Learner(BaseLearner):
         if self._cur_task > 0 and self.ca_epochs > 0:
             self._stage2_compact_classifier()
 
+    def _domain_incremental_train(self, data_manager):
+        self._cur_task += 1
+        if self._cur_task == 0:
+            self._known_classes = 0
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            self._network.update_fc(self._total_classes)
+            for c_id in range(self._total_classes):
+                self.cls_to_task_id[c_id] = 0
+        else:
+            self._known_classes = self._total_classes
+
+        try:
+            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+        except Exception:
+            self._cur_domain = 0
+        logging.info('Domain-incremental task {} on domain {}'.format(self._cur_task, self._cur_domain))
+
+        self._network.to(self._device)
+        train_dset = data_manager.get_domain_incremental_dataset(self._cur_task, mode='train', source='train')
+        test_dset = data_manager.get_domain_incremental_dataset(self._cur_task, mode='test', source='test')
+        self.train_loader = DataLoader(train_dset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
+        self.test_loader = DataLoader(test_dset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
+
+        self._stage1_domain_incremental_training(self.train_loader, self.test_loader)
+
+        if len(self._multiple_gpus) > 1:
+            self._network = self._network.module
+
+        if self.ca_epochs > 0:
+            self._network.fc.backup()
+            self._compute_domain_incremental_distributions(data_manager)
+            self._stage2_compact_classifier()
+
     def _run(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(self.epochs))
         for _, epoch in enumerate(prog_bar):
@@ -130,6 +167,55 @@ class Learner(BaseLearner):
                 )
             prog_bar.set_description(info)
         logging.info(info)
+
+    def _run_domain_incremental(self, train_loader, test_loader, optimizer, scheduler):
+        prog_bar = tqdm(range(self.epochs))
+        for _, epoch in enumerate(prog_bar):
+            self._network.train()
+            losses = 0.
+            for i, (_, inputs, targets) in enumerate(train_loader):
+                inputs, targets = inputs.to(self._device), targets.to(self._device)
+                logits = self._network(inputs, bcb_no_grad=self.fix_bcb)['logits'][:, :self._total_classes]
+                loss = F.cross_entropy(logits, targets)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                losses += loss.item()
+
+            scheduler.step()
+            train_acc = self._compute_accuracy(self._network, train_loader)
+            if (epoch + 1) % 5 == 0 or epoch == self.epochs - 1:
+                test_acc = self._compute_accuracy(self._network, test_loader)
+                info = "Domain Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                    self._cur_task, epoch + 1, self.epochs, losses / len(train_loader), train_acc, test_acc
+                )
+            else:
+                info = "Domain Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
+                    self._cur_task, epoch + 1, self.epochs, losses / len(train_loader), train_acc
+                )
+            prog_bar.set_description(info)
+        logging.info(info)
+
+    def _stage1_domain_incremental_training(self, train_loader, test_loader):
+        base_params = self._network.backbone.parameters()
+        base_fc_params = [p for p in self._network.fc.parameters() if p.requires_grad==True]
+        head_scale = 1.
+        if not self.fix_bcb:
+            base_params = {'params': base_params, 'lr': self.lrate*self.bcb_lrscale, 'weight_decay': self.weight_decay}
+            base_fc_params = {'params': base_fc_params, 'lr': self.lrate*head_scale, 'weight_decay': self.weight_decay}
+            network_params = [base_params, base_fc_params]
+        else:
+            for p in base_params:
+                p.requires_grad = False
+            network_params = [{'params': base_fc_params, 'lr': self.lrate*head_scale, 'weight_decay': self.weight_decay}]
+        optimizer = optim.SGD(network_params, lr=self.lrate, momentum=0.9, weight_decay=self.weight_decay)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=self.milestones, gamma=self.lrate_decay)
+
+        if len(self._multiple_gpus) > 1:
+            self._network = nn.DataParallel(self._network, self._multiple_gpus)
+
+        self._run_domain_incremental(train_loader, test_loader, optimizer, scheduler)
 
     def _stage1_training(self, train_loader, test_loader):
         '''
@@ -243,6 +329,22 @@ class Learner(BaseLearner):
                 self._cur_task, losses/self._total_classes, test_acc)
             logging.info(info)
 
+
+    def _compute_domain_incremental_distributions(self, data_manager):
+        self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+        self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+        seen_domains = [d for group in data_manager.domain_groups[:self._cur_task + 1] for d in group]
+        for class_idx in range(self._total_classes):
+            data, targets, idx_dataset = data_manager.get_domain_dataset(
+                np.arange(class_idx, class_idx + 1), source='train', mode='test', domain_id=seen_domains, ret_data=True
+            )
+            idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            vectors, _ = self._extract_vectors(idx_loader)
+            class_mean = np.mean(vectors, axis=0)
+            class_cov = torch.cov(torch.tensor(vectors, dtype=torch.float64).T)+torch.eye(class_mean.shape[-1])*1e-4
+            self._class_means_slca[class_idx, :] = class_mean
+            self._class_covs_slca[class_idx, ...] = class_cov
+        logging.info('Compute domain-incremental distributions for classes 0-{}'.format(self._total_classes))
 
     def _compute_distributions(self, data_manager):
         if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:

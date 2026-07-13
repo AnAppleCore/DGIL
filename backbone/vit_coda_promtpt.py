@@ -355,13 +355,13 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
         x = self.norm_pre(x)
 
-        prompt_loss = torch.zeros((1,), requires_grad=True).to(device=x.device)
+        prompt_loss = torch.zeros((1,), device=x.device)
         for i,blk in enumerate(self.blocks):
 
             if prompt is not None:
                 if train:
                     p_list, loss, x = prompt.forward(q, i, x, train=True)
-                    prompt_loss += loss
+                    prompt_loss = prompt_loss + loss
                 else:
                     p_list, _, x = prompt.forward(q, i, x, train=False)
                 # if p_list is not None and i == 1:
@@ -553,17 +553,25 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
+    local_weight_file = None
     local_default_cfg = default_cfgs.get(variant)
     if pretrained and local_default_cfg:
         url = local_default_cfg.get('url', '')
         local_file = os.path.join('checkpoints', os.path.basename(url))
         if url and os.path.exists(local_file):
-            pretrained_cfg = {**local_default_cfg, 'url': '', 'file': local_file, 'custom_load': url.endswith('.npz')}
+            if url.endswith('.npz'):
+                local_weight_file = local_file
+                pretrained = False
+            else:
+                pretrained_cfg = {**local_default_cfg, 'url': '', 'file': local_file}
     model = build_model_with_cfg(
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
         **kwargs)
+    if local_weight_file is not None:
+        _load_weights(model, local_weight_file)
+        _logger.info(f'Loaded pretrained weights from local npz file ({local_weight_file})')
     return model
 
 

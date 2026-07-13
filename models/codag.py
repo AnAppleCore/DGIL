@@ -46,27 +46,40 @@ class Learner(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        task_size = data_manager.get_task_size(self._cur_task)
-        self._total_classes = self._known_classes + task_size
-        self.topk = min(self.topk, self._total_classes)
-        self._network.update_fc(self._total_classes)
+        if self.args.get("domain_incremental", False):
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            if self._cur_task == 0:
+                self._network.update_fc(self._total_classes)
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except Exception:
+                self._cur_domain = 0
+            logging.info("Domain-incremental task {} on fixed classes 0-{}".format(self._cur_task, self._total_classes))
+            train_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="train", mode="train")
+            test_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="test", mode="test")
+        else:
+            task_size = data_manager.get_task_size(self._cur_task)
+            self._total_classes = self._known_classes + task_size
+            self.topk = min(self.topk, self._total_classes)
+            self._network.update_fc(self._total_classes)
 
-        try:
-            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
-        except Exception:
-            self._cur_domain = 0
-        logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except Exception:
+                self._cur_domain = 0
+            logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
 
-        appendent = self._get_memory() if self.use_memory else []
-        train_dataset = data_manager.get_dataset(
-            np.arange(self._known_classes, self._total_classes),
-            source="train",
-            mode="train",
-            appendent=appendent,
-        )
-        test_dataset = data_manager.get_dataset(
-            np.arange(0, self._total_classes), source="test", mode="test"
-        )
+            appendent = self._get_memory() if self.use_memory else []
+            train_dataset = data_manager.get_dataset(
+                np.arange(self._known_classes, self._total_classes),
+                source="train",
+                mode="train",
+                appendent=appendent,
+            )
+            test_dataset = data_manager.get_dataset(
+                np.arange(0, self._total_classes), source="test", mode="test"
+            )
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
 
@@ -97,8 +110,12 @@ class Learner(BaseLearner):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 outputs = self._network(inputs)
                 logits = outputs["logits"][:, : self._total_classes]
-                cur_logits = logits[:, self._known_classes : self._total_classes]
-                cur_targets = targets - self._known_classes
+                if self.args.get("domain_incremental", False):
+                    cur_logits = logits[:, :self._total_classes]
+                    cur_targets = targets
+                else:
+                    cur_logits = logits[:, self._known_classes : self._total_classes]
+                    cur_targets = targets - self._known_classes
                 loss_ce = F.cross_entropy(cur_logits, cur_targets)
                 loss_pseudo, kept, seen = self._pseudo_label_loss(inputs, logits)
                 loss_kd = self._distillation_loss(logits, inputs)
@@ -173,8 +190,12 @@ class Learner(BaseLearner):
                     mb_inputs = inputs[start : start + self.da_micro_batch_size].to(self._device)
                     mb_targets = targets[start : start + self.da_micro_batch_size].to(self._device)
                     logits = self._da_network(mb_inputs)["logits"][:, : self._total_classes]
-                    cur_logits = logits[:, self._known_classes : self._total_classes]
-                    cur_targets = mb_targets - self._known_classes
+                    if self.args.get("domain_incremental", False):
+                        cur_logits = logits[:, :self._total_classes]
+                        cur_targets = mb_targets
+                    else:
+                        cur_logits = logits[:, self._known_classes : self._total_classes]
+                        cur_targets = mb_targets - self._known_classes
                     loss = F.cross_entropy(cur_logits, cur_targets)
                     kd = self._distillation_loss(logits, mb_inputs, student_is_da=True)
                     optimizer.zero_grad()
@@ -188,17 +209,20 @@ class Learner(BaseLearner):
         if self._da_network is None:
             return dg_logits.new_tensor(0.0), 0, 0
         with torch.no_grad():
-            da_logits = self._da_network(inputs)["logits"][:, self._known_classes : self._total_classes]
+            if self.args.get("domain_incremental", False):
+                da_logits = self._da_network(inputs)["logits"][:, : self._total_classes]
+            else:
+                da_logits = self._da_network(inputs)["logits"][:, self._known_classes : self._total_classes]
             probs = F.softmax(da_logits, dim=1)
             conf, pseudo = probs.max(dim=1)
             mask = conf >= self.pseudo_threshold
         if not torch.any(mask):
             return dg_logits.new_tensor(0.0), 0, int(mask.numel())
-        dg_cur_logits = dg_logits[:, self._known_classes : self._total_classes]
+        dg_cur_logits = dg_logits[:, : self._total_classes] if self.args.get("domain_incremental", False) else dg_logits[:, self._known_classes : self._total_classes]
         return F.cross_entropy(dg_cur_logits[mask], pseudo[mask]), int(mask.sum().item()), int(mask.numel())
 
     def _distillation_loss(self, logits, inputs, student_is_da=False):
-        if self._old_network is None or self._known_classes == 0:
+        if self.args.get("domain_incremental", False) or self._old_network is None or self._known_classes == 0:
             return logits.new_tensor(0.0)
         old_network = self._old_network.to(self._device)
         old_network.eval()
@@ -218,7 +242,8 @@ class Learner(BaseLearner):
         for _, inputs, targets in loader:
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = model(inputs)["logits"][:, : self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = model(inputs)["logits"][:, : eval_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)
@@ -230,8 +255,9 @@ class Learner(BaseLearner):
         for _, inputs, targets in loader:
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs)["logits"][:, : self._total_classes]
-            predicts = torch.topk(outputs, k=self.topk, dim=1, largest=True, sorted=True)[1]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = self._network(inputs)["logits"][:, : eval_classes]
+            predicts = torch.topk(outputs, k=min(self.topk, outputs.shape[1]), dim=1, largest=True, sorted=True)[1]
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
         return np.concatenate(y_pred), np.concatenate(y_true)
