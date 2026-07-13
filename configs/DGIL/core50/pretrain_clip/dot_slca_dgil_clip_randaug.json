@@ -18,7 +18,7 @@
         1995,
         1996
     ],
-    "lrate": 0.01,
+    "lrate": 0.005,
     "weight_decay": 0.0005,
     "batch_size": 64,
     "lrate_decay": 0.1,
