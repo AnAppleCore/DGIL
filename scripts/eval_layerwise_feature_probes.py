@@ -8,15 +8,16 @@ from layer_probe_lib import (
     DATASET_DEFAULTS,
     accuracy_metrics,
     append_csv,
+    analysis_result_dir,
     atomic_write_json,
     canonical_backbone,
+    canonical_run_name,
     class_group_accuracy,
     feature_cache_dir,
     fit_predict_linear,
     load_feature_split,
     ncm_predict,
     project_root,
-    safe_name,
     standardize_fit,
     whitened_ncm_predict,
 )
@@ -26,7 +27,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate layer-wise feature probes from cached features.")
     parser.add_argument("--dataset", required=True, choices=sorted(DATASET_DEFAULTS.keys()))
     parser.add_argument("--backbone", required=True, help="Backbone name or alias: default, ibot, mae, dinov2, clip.")
-    parser.add_argument("--output-dir", default="results/layer_probe")
+    parser.add_argument("--output-dir", default="results/layer_probe/raw_pretrained")
     parser.add_argument("--normalization", default="repo", choices=["repo", "imagenet", "clip"])
     parser.add_argument("--feature-pools", nargs="+", default=["cls", "mean"], choices=["cls", "mean"])
     parser.add_argument("--targets", nargs="+", default=["class", "domain"], choices=["class", "domain"])
@@ -64,23 +65,23 @@ def main():
     root = project_root()
     output_dir = (root / args.output_dir).resolve() if not Path(args.output_dir).is_absolute() else Path(args.output_dir)
     backbone = canonical_backbone(args.backbone, args.feature_source)
-    result_dir = output_dir / "probe_results" / args.dataset / safe_name(backbone)
-    if args.run_name:
-        result_dir = result_dir / safe_name(args.run_name)
-    result_dir = result_dir / args.normalization
+    run_name = canonical_run_name(args.feature_source, args.run_name)
+    result_dir = analysis_result_dir(
+        output_dir, "layer_probe", args.dataset, backbone, run_name, args.normalization
+    )
     result_dir.mkdir(parents=True, exist_ok=True)
-    result_json = result_dir / "results.json"
-    result_csv = result_dir / "results.csv"
+    result_json = result_dir / "metrics.json"
+    result_csv = result_dir / "metrics.csv"
     if result_json.exists() and not args.overwrite:
         raise FileExistsError(f"Result file exists; use --overwrite to replace: {result_json}")
     if args.overwrite and result_csv.exists():
         result_csv.unlink()
 
     progress(f"load train split start dataset={args.dataset} backbone={backbone}")
-    train = load_feature_split(output_dir, args.dataset, backbone, args.normalization, "train", args.run_name)
+    train = load_feature_split(output_dir, args.dataset, backbone, args.normalization, "train", run_name)
     progress(f"load train split done shards={len(train['shards'])} cls_shape={train['cls'].shape} mean_shape={train['mean'].shape}")
     progress(f"load test split start dataset={args.dataset} backbone={backbone}")
-    test = load_feature_split(output_dir, args.dataset, backbone, args.normalization, "test", args.run_name)
+    test = load_feature_split(output_dir, args.dataset, backbone, args.normalization, "test", run_name)
     progress(f"load test split done shards={len(test['shards'])} cls_shape={test['cls'].shape} mean_shape={test['mean'].shape}")
     progress(f"labels train_class={train['class'].shape} test_class={test['class'].shape} train_domain={train['domain'].shape} test_domain={test['domain'].shape}")
     defaults = DATASET_DEFAULTS[args.dataset]
@@ -95,7 +96,7 @@ def main():
         "backbone": backbone,
         "normalization": args.normalization,
         "feature_source": args.feature_source,
-        "run_name": args.run_name,
+        "run_name": run_name,
         "preprocess": args.preprocess,
         "train_shards": train["shards"],
         "test_shards": test["shards"],
@@ -162,7 +163,7 @@ def main():
                         "backbone": backbone,
                         "normalization": args.normalization,
                         "feature_source": args.feature_source,
-                        "run_name": args.run_name,
+                        "run_name": run_name,
                         "feature_pool": feature_pool,
                         "layer": layer_idx + 1,
                         "target": target,
@@ -183,7 +184,7 @@ def main():
                         "backbone": backbone,
                         "normalization": args.normalization,
                         "feature_source": args.feature_source,
-                        "run_name": args.run_name,
+                        "run_name": run_name,
                         "feature_pool": feature_pool,
                         "layer": layer_idx + 1,
                         "target": target,

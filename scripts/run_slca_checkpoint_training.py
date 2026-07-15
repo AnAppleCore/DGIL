@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument("--backbones", nargs="+", default=list(CONFIGS), choices=list(CONFIGS))
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--gpus", default="7", help="Comma-separated GPU ids. One serial worker is launched per GPU.")
-    parser.add_argument("--output-dir", default="results/layer_probe_slca_trained")
+    parser.add_argument("--output-dir", default="results/layer_probe/slca_trained")
     parser.add_argument("--session-prefix", default="slca_ckpt")
     parser.add_argument("--pilot", action="store_true", help="Only run digitsdg/clip unless explicit datasets/backbones are provided.")
     parser.add_argument("--dry-run", action="store_true")

@@ -15,6 +15,7 @@ from layer_probe_lib import (
     build_data_manager,
     build_probe_args,
     canonical_backbone,
+    canonical_run_name,
     check_required_checkpoints,
     feature_cache_dir,
     feature_shard_path,
@@ -28,7 +29,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Extract layer-wise pretrained ViT features for class/domain probing.")
     parser.add_argument("--dataset", required=True, choices=sorted(DATASET_DEFAULTS.keys()))
     parser.add_argument("--backbone", required=True, help="Backbone name or alias: default, ibot, mae, dinov2, clip.")
-    parser.add_argument("--output-dir", default="results/layer_probe")
+    parser.add_argument("--output-dir", default="results/layer_probe/raw_pretrained")
     parser.add_argument("--normalization", default="repo", choices=["repo", "imagenet", "clip"])
     parser.add_argument("--device", default="0")
     parser.add_argument("--batch-size", type=int, default=64)
@@ -103,6 +104,7 @@ def main():
     root = project_root()
     output_dir = (root / args.output_dir).resolve() if not Path(args.output_dir).is_absolute() else Path(args.output_dir)
     backbone = canonical_backbone(args.backbone, args.feature_source)
+    run_name = canonical_run_name(args.feature_source, args.run_name)
     checkpoint_ok, missing = check_required_checkpoints(backbone, root / "checkpoints")
     if not checkpoint_ok:
         raise FileNotFoundError("Missing required checkpoint files: " + ", ".join(missing))
@@ -126,14 +128,14 @@ def main():
     model = model.to(torch_device)
     model.eval()
 
-    cache_dir = feature_cache_dir(output_dir, args.dataset, backbone, args.normalization, args.run_name)
+    cache_dir = feature_cache_dir(output_dir, args.dataset, backbone, args.normalization, run_name)
     cache_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "dataset": args.dataset,
         "backbone": backbone,
         "normalization": args.normalization,
         "feature_source": args.feature_source,
-        "run_name": args.run_name,
+        "run_name": run_name,
         "checkpoint_meta": checkpoint_meta,
         "splits": args.splits,
         "domains": domains,
@@ -147,7 +149,7 @@ def main():
 
     for split in args.splits:
         for domain_id in domains:
-            shard = feature_shard_path(output_dir, args.dataset, backbone, args.normalization, split, domain_id, args.run_name)
+            shard = feature_shard_path(output_dir, args.dataset, backbone, args.normalization, split, domain_id, run_name)
             if shard.exists() and not args.overwrite:
                 print(f"[skip] existing shard {shard}", flush=True)
                 summary["shards"].append(str(shard))

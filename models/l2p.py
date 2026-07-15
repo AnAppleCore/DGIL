@@ -51,15 +51,21 @@ class Learner(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
-        # self._network.update_fc(self._total_classes)
-        logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+        if self.args.get("domain_incremental", False):
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            logging.info("Domain-incremental task {} on fixed classes 0-{}".format(self._cur_task, self._total_classes))
+            train_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, mode="train", source="train")
+            test_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, mode="test", source="test")
+        else:
+            self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
+            logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train")
+            test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
 
-        train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train")
         self.train_dataset = train_dataset
         self.data_manager = data_manager
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
-        test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
 
         if len(self._multiple_gpus) > 1:
@@ -173,7 +179,8 @@ class Learner(BaseLearner):
             
                 output = self._network(inputs, task_id=self._cur_task, train=True)
                 logits = output["logits"][:, :self._total_classes]
-                logits[:, :self._known_classes] = float('-inf')
+                if not self.args.get("domain_incremental", False):
+                    logits[:, :self._known_classes] = float('-inf')
 
                 loss = F.cross_entropy(logits, targets.long())
                 if self.args["pull_constraint"] and 'reduce_sim' in output:
@@ -220,9 +227,10 @@ class Learner(BaseLearner):
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = self._network(inputs, task_id=self._cur_task)["logits"][:, :self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = self._network(inputs, task_id=self._cur_task)["logits"][:, :eval_classes]
             predicts = torch.topk(
-                outputs, k=self.topk, dim=1, largest=True, sorted=True
+                outputs, k=min(self.topk, outputs.shape[1]), dim=1, largest=True, sorted=True
             )[
                 1
             ]  # [bs, topk]
@@ -237,7 +245,8 @@ class Learner(BaseLearner):
         for i, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             with torch.no_grad():
-                outputs = model(inputs, task_id=self._cur_task)["logits"][:, :self._total_classes]
+                eval_classes = self.data_manager.nb_classes if self.args.get("domain_incremental", False) else self._total_classes
+                outputs = model(inputs, task_id=self._cur_task)["logits"][:, :eval_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)

@@ -74,6 +74,9 @@ class Learner(BaseLearner):
         self._network.fc.recall()
 
     def incremental_train(self, data_manager):
+        if self.args.get("domain_incremental", False):
+            return self._domain_incremental_train(data_manager)
+
         self._cur_task += 1
         task_size = data_manager.get_task_size(self._cur_task)
         self.task_sizes.append(task_size)
@@ -125,6 +128,50 @@ class Learner(BaseLearner):
                 self.save_dot_features_for_tsne()
             else:
                 self.save_features_for_tsne()
+
+    def _domain_incremental_train(self, data_manager):
+        self._cur_task += 1
+        if self._cur_task == 0:
+            self._known_classes = 0
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            self.task_sizes.append(self._total_classes)
+            self._network.update_fc(self._total_classes)
+            for c_id in range(self._total_classes):
+                self.cls_to_task_id[c_id] = 0
+        else:
+            self._known_classes = self._total_classes
+            self.task_sizes.append(0)
+
+        try:
+            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+        except Exception:
+            self._cur_domain = 0
+        if self._cur_domain not in self.domain_id_to_cls:
+            self.domain_id_to_cls[self._cur_domain] = []
+        for c_id in range(self._total_classes):
+            self.cls_to_domain_id[c_id] = self._cur_domain
+            if c_id not in self.domain_id_to_cls[self._cur_domain]:
+                self.domain_id_to_cls[self._cur_domain].append(c_id)
+        logging.info('Domain-incremental task {} on domain {}'.format(self._cur_task, self._cur_domain))
+
+        self._network.to(self._device)
+        train_dset = data_manager.get_domain_incremental_dataset(self._cur_task, mode='train', source='train')
+        test_dset = data_manager.get_domain_incremental_dataset(self._cur_task, mode='test', source='test')
+        self.train_loader = DataLoader(train_dset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
+        self.test_loader = DataLoader(test_dset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
+
+        self._stage1_domain_incremental_training(self.train_loader, self.test_loader)
+
+        if len(self._multiple_gpus) > 1:
+            self._network = self._network.module
+
+        self._network.fc.backup()
+        self._compute_domain_incremental_distributions(data_manager)
+        if len(self.domain_id_to_cls.keys()) > 1 and self.dot_epochs > 0:
+            self._stage2_domain_transformation()
+        if self._cur_task > 0 and self.ca_epochs > 0:
+            self._stage3_compact_classifier()
         
 
     def _run(self, train_loader, test_loader, optimizer, scheduler):
@@ -181,6 +228,64 @@ class Learner(BaseLearner):
                 )
             prog_bar.set_description(info)
         logging.info(info)
+
+    def _run_domain_incremental(self, train_loader, test_loader, optimizer, scheduler):
+        prog_bar = tqdm(range(self.epochs))
+        for _, epoch in enumerate(prog_bar):
+            self._network.train()
+            losses = 0.
+            losses_orth = 0.
+            for i, (_, inputs, targets) in enumerate(train_loader):
+                inputs, targets = inputs.to(self._device), targets.to(self._device)
+                if self.use_rand_aug:
+                    inputs = self.rand_aug(inputs)
+                output = self._network(inputs, bcb_no_grad=self.fix_bcb)
+                logits = output['logits'][:, :self._total_classes]
+                features = output['pre_logits']
+                loss = F.cross_entropy(logits, targets)
+                if self.orth_loss_weight > 0:
+                    loss_orth = self._compute_orth_loss(features, targets)
+                    loss += self.orth_loss_weight * loss_orth
+                    losses_orth += loss_orth.item()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                losses += loss.item()
+
+            scheduler.step()
+            train_acc = self._compute_accuracy(self._network, train_loader)
+            if (epoch + 1) % 5 == 0 or epoch == self.epochs - 1:
+                test_acc = self._compute_accuracy(self._network, test_loader)
+                info = "Domain Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
+                    self._cur_task, epoch + 1, self.epochs, losses / len(train_loader), losses_orth / len(train_loader), train_acc, test_acc
+                )
+            else:
+                info = "Domain Task {}, Epoch {}/{} => Loss {:.3f}, Loss_orth {:.3f}, Train_accy {:.2f}".format(
+                    self._cur_task, epoch + 1, self.epochs, losses / len(train_loader), losses_orth / len(train_loader), train_acc
+                )
+            prog_bar.set_description(info)
+        logging.info(info)
+
+    def _stage1_domain_incremental_training(self, train_loader, test_loader):
+        base_params = self._network.backbone.parameters()
+        base_fc_params = [p for p in self._network.fc.parameters() if p.requires_grad==True]
+        head_scale = 1.
+        if not self.fix_bcb:
+            base_params = {'params': base_params, 'lr': self.lrate*self.bcb_lrscale, 'weight_decay': self.weight_decay}
+            base_fc_params = {'params': base_fc_params, 'lr': self.lrate*head_scale, 'weight_decay': self.weight_decay}
+            network_params = [base_params, base_fc_params]
+        else:
+            for p in base_params:
+                p.requires_grad = False
+            network_params = [{'params': base_fc_params, 'lr': self.lrate*head_scale, 'weight_decay': self.weight_decay}]
+        optimizer = optim.SGD(network_params, lr=self.lrate, momentum=0.9, weight_decay=self.weight_decay)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=self.milestones, gamma=self.lrate_decay)
+
+        if len(self._multiple_gpus) > 1:
+            self._network = nn.DataParallel(self._network, self._multiple_gpus)
+
+        self._run_domain_incremental(train_loader, test_loader, optimizer, scheduler)
 
     def _stage1_training(self, train_loader, test_loader):
         '''
@@ -386,10 +491,13 @@ class Learner(BaseLearner):
                     prev_t_size = 0
                     cur_t_size = 0
                     for _ti in range(self._cur_task+1):
-                        cur_t_size += self.task_sizes[_ti]
+                        task_size = self.task_sizes[_ti]
+                        if task_size <= 0:
+                            continue
+                        cur_t_size += task_size
                         temp_norm = torch.norm(logits[:, prev_t_size:cur_t_size], p=2, dim=-1, keepdim=True) + 1e-7
                         per_task_norm.append(temp_norm)
-                        prev_t_size += self.task_sizes[_ti]
+                        prev_t_size = cur_t_size
                     per_task_norm = torch.cat(per_task_norm, dim=-1)
                     norms = per_task_norm.mean(dim=-1, keepdim=True)
                         
@@ -411,6 +519,58 @@ class Learner(BaseLearner):
                 self._cur_task, losses/self._total_classes, test_acc)
             logging.info(info)
 
+
+    def _compute_domain_incremental_distributions(self, data_manager):
+        all_features = []
+        seen_domains = [d for group in data_manager.domain_groups[:self._cur_task + 1] for d in group]
+        for class_idx in range(self._total_classes):
+            data, targets, idx_dataset = data_manager.get_domain_dataset(
+                np.arange(class_idx, class_idx + 1), source='train', mode='test', domain_id=seen_domains, ret_data=True
+            )
+            idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            if self.dot_epochs > 0:
+                vectors, features, _ = self._extract_layerwise_vectors(idx_loader)
+                all_features.append(features)
+            else:
+                vectors, _ = self._extract_vectors(idx_loader)
+            vectors = torch.tensor(vectors, dtype=torch.float64).to(self._device)
+            if self.dist_type == 'mean_cov':
+                cls_dist = CovarianceDist(feature_dim=vectors.shape[-1], device=self._device)
+                cls_mean = torch.mean(vectors, dim=0)
+                cls_cov = torch.cov(vectors.T)
+                cls_dist.init_from(mean=cls_mean, cov=cls_cov, num_samples=vectors.shape[0])
+            elif self.dist_type == 'mean_var':
+                cls_dist = VarianceDist(feature_dim=vectors.shape[-1], device=self._device)
+                cls_mean = torch.mean(vectors, dim=0)
+                cls_var = torch.var(vectors, dim=0)
+                cls_dist.init_from(mean=cls_mean, var=cls_var, num_samples=vectors.shape[0])
+            elif self.dist_type == 'multi_cen':
+                n_centroids = min(10, vectors.shape[0])
+                cls_dist = MultiCentroidDist(n_centroids=n_centroids, feature_dim=vectors.shape[-1], device=self._device)
+                cls_dist.compute_centroids(vectors)
+            else:
+                raise NotImplementedError(f"Unsupported distribution type: {self.dist_type}")
+            self.cls_dists[class_idx] = cls_dist
+
+        logging.info('Compute domain-incremental distributions for classes 0-{}'.format(self._total_classes))
+
+        if self.dot_epochs > 0:
+            all_features = np.concatenate(all_features, axis=0)
+            all_features_mean = np.mean(all_features, axis=1)
+            n_clusters = min(self.domain_centroids, all_features_mean.shape[0])
+            kmeans = KMeans(n_clusters=n_clusters).fit(all_features_mean)
+            feature_centers = kmeans.cluster_centers_
+            prototype_idx = []
+            all_idx = np.arange(all_features_mean.shape[0])
+            for i in range(n_clusters):
+                i_mask = (kmeans.labels_ == i)
+                i_idx = all_idx[i_mask]
+                dist = np.linalg.norm(all_features_mean[i_mask] - feature_centers[i], axis=1)
+                prototype_idx.append(i_idx[np.argmin(dist)])
+            self.prototypes = all_features[prototype_idx] if self.prototypes is None else np.concatenate([self.prototypes, all_features[prototype_idx]], axis=0)
+            new_domain_ids = np.zeros(n_clusters, dtype=np.int32) + self._cur_domain
+            self.prototypes_domain_id = new_domain_ids if self.prototypes_domain_id is None else np.concatenate([self.prototypes_domain_id, new_domain_ids], axis=0)
+        logging.info('Compute domain prototypes for domain {}'.format(self._cur_domain))
 
     def _compute_distributions(self, data_manager):
         # if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:

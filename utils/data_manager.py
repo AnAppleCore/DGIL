@@ -267,6 +267,18 @@ def _get_idata(dataset_name, args=None):
         return digitsfive()
     elif name == "core50":
         return core50()
+    elif name == "rxrx1_balanced300":
+        return rxrx1_balanced300()
+    elif name == "rxrx1_balanced100":
+        return rxrx1_balanced100()
+    elif name == "rxrx1_balanced50":
+        return rxrx1_balanced50()
+    elif name == "fldr":
+        return fldr()
+    elif name == "camelyon17":
+        return camelyon17()
+    elif name == "midog25":
+        return midog25()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 

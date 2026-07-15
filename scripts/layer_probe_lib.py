@@ -74,6 +74,48 @@ def safe_name(name: str) -> str:
     return name.replace("/", "_").replace(" ", "_")
 
 
+DEFAULT_RUN_NAMES = {
+    "raw_pretrained": "default",
+    "slca_trained": "seed1994_final",
+}
+
+
+def source_output_dir(results_root: Path, feature_source: str) -> Path:
+    if feature_source not in DEFAULT_RUN_NAMES:
+        raise ValueError(f"Unknown feature source: {feature_source}")
+    return Path(results_root) / feature_source
+
+
+def canonical_run_name(feature_source: str, run_name: str | None = None) -> str:
+    if feature_source not in DEFAULT_RUN_NAMES:
+        raise ValueError(f"Unknown feature source: {feature_source}")
+    return safe_name(run_name or DEFAULT_RUN_NAMES[feature_source])
+
+
+def analysis_result_dir(
+    source_dir: Path,
+    analysis: str,
+    dataset: str,
+    backbone: str,
+    run_name: str,
+    normalization: str,
+    method: str | None = None,
+    protocol: str | None = None,
+) -> Path:
+    path = source_dir / "analyses" / analysis
+    if method:
+        path = path / safe_name(method)
+    path = path / dataset / safe_name(backbone) / safe_name(run_name) / normalization
+    if protocol:
+        path = path / safe_name(protocol)
+    return path
+
+
+def figure_output_dir(source_dir: Path, analysis: str, method: str | None = None) -> Path:
+    path = source_dir / "figures" / analysis
+    return path / safe_name(method) if method else path
+
+
 def backbone_required_checkpoints(backbone: str) -> List[str]:
     if backbone in {"vit_base_patch16_224_dot", "pretrained_vit_b16_224_dot", "vit_base_patch16_224"}:
         return ["B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--imagenet2012-steps_20k-lr_0.01-res_224.npz"]
@@ -255,18 +297,15 @@ def balanced_indices(labels: np.ndarray, max_per_class: Optional[int], seed: int
     return np.sort(np.concatenate(selected)) if selected else np.array([], dtype=np.int64)
 
 
-def feature_cache_dir(output_dir: Path, dataset: str, backbone: str, normalization: str, run_name: str | None = None) -> Path:
-    base = output_dir / "features" / dataset / safe_name(backbone)
-    if run_name:
-        base = base / safe_name(run_name)
-    return base / normalization
+def feature_cache_dir(output_dir: Path, dataset: str, backbone: str, normalization: str, run_name: str) -> Path:
+    return output_dir / "features" / dataset / safe_name(backbone) / safe_name(run_name) / normalization
 
 
-def feature_shard_path(output_dir: Path, dataset: str, backbone: str, normalization: str, split: str, domain_id: int, run_name: str | None = None) -> Path:
+def feature_shard_path(output_dir: Path, dataset: str, backbone: str, normalization: str, split: str, domain_id: int, run_name: str) -> Path:
     return feature_cache_dir(output_dir, dataset, backbone, normalization, run_name) / f"{split}_domain{domain_id:02d}.npz"
 
 
-def load_feature_split(output_dir: Path, dataset: str, backbone: str, normalization: str, split: str, run_name: str | None = None):
+def load_feature_split(output_dir: Path, dataset: str, backbone: str, normalization: str, split: str, run_name: str):
     cache_dir = feature_cache_dir(output_dir, dataset, backbone, normalization, run_name)
     shard_paths = sorted(cache_dir.glob(f"{split}_domain*.npz"))
     if not shard_paths:
@@ -274,14 +313,14 @@ def load_feature_split(output_dir: Path, dataset: str, backbone: str, normalizat
     cls, mean, y_class, y_domain, sample_indices = [], [], [], [], []
     metadata = []
     for path in shard_paths:
-        data = np.load(path, allow_pickle=False)
-        cls.append(data["features_cls"].astype(np.float32, copy=False))
-        mean.append(data["features_mean"].astype(np.float32, copy=False))
-        y_class.append(data["class_ids"].astype(np.int64, copy=False))
-        y_domain.append(data["domain_ids"].astype(np.int64, copy=False))
-        sample_indices.append(data["sample_indices"].astype(np.int64, copy=False))
-        if "metadata_json" in data:
-            metadata.append(json.loads(str(data["metadata_json"])))
+        with np.load(path, allow_pickle=False) as data:
+            cls.append(data["features_cls"].astype(np.float32, copy=False))
+            mean.append(data["features_mean"].astype(np.float32, copy=False))
+            y_class.append(data["class_ids"].astype(np.int64, copy=False))
+            y_domain.append(data["domain_ids"].astype(np.int64, copy=False))
+            sample_indices.append(data["sample_indices"].astype(np.int64, copy=False))
+            if "metadata_json" in data:
+                metadata.append(json.loads(str(data["metadata_json"])))
     return {
         "cls": np.concatenate(cls, axis=0),
         "mean": np.concatenate(mean, axis=0),
@@ -290,6 +329,62 @@ def load_feature_split(output_dir: Path, dataset: str, backbone: str, normalizat
         "sample_indices": np.concatenate(sample_indices, axis=0),
         "metadata": metadata,
         "shards": [str(p) for p in shard_paths],
+    }
+
+
+def load_feature_layer(
+    output_dir: Path,
+    dataset: str,
+    backbone: str,
+    normalization: str,
+    split: str,
+    feature_pool: str,
+    layer: int,
+    run_name: str,
+    domain_ids: Optional[Sequence[int]] = None,
+) -> dict:
+    if feature_pool not in {"cls", "mean"}:
+        raise ValueError(f"Unknown feature pool: {feature_pool}")
+    if layer < 1:
+        raise ValueError(f"Layer must be one-indexed and positive, got {layer}")
+    cache_dir = feature_cache_dir(output_dir, dataset, backbone, normalization, run_name)
+    requested_domains = None if domain_ids is None else {int(value) for value in domain_ids}
+    shard_paths = sorted(cache_dir.glob(f"{split}_domain*.npz"))
+    if requested_domains is not None:
+        shard_paths = [
+            path for path in shard_paths
+            if int(path.stem.rsplit("domain", 1)[1]) in requested_domains
+        ]
+    if not shard_paths:
+        raise FileNotFoundError(
+            f"No feature shards found for {dataset}/{backbone}/{normalization}/{split} in {cache_dir}"
+        )
+
+    feature_key = f"features_{feature_pool}"
+    features, y_class, y_domain, sample_indices = [], [], [], []
+    metadata = []
+    for path in shard_paths:
+        with np.load(path, allow_pickle=False) as data:
+            shard_features = data[feature_key]
+            if shard_features.ndim != 3 or layer > shard_features.shape[1]:
+                raise RuntimeError(
+                    f"Expected {feature_key} shaped [N,L,D] with L >= {layer}, got {shard_features.shape} in {path}"
+                )
+            features.append(shard_features[:, layer - 1, :].astype(np.float32, copy=False))
+            y_class.append(data["class_ids"].astype(np.int64, copy=False))
+            y_domain.append(data["domain_ids"].astype(np.int64, copy=False))
+            sample_indices.append(data["sample_indices"].astype(np.int64, copy=False))
+            if "metadata_json" in data:
+                metadata.append(json.loads(str(data["metadata_json"])))
+    return {
+        "features": np.concatenate(features, axis=0),
+        "class": np.concatenate(y_class, axis=0),
+        "domain": np.concatenate(y_domain, axis=0),
+        "sample_indices": np.concatenate(sample_indices, axis=0),
+        "metadata": metadata,
+        "shards": [str(path) for path in shard_paths],
+        "feature_pool": feature_pool,
+        "layer": int(layer),
     }
 
 
@@ -347,6 +442,162 @@ def ncm_predict(x_train: np.ndarray, y_train: np.ndarray, x_test: np.ndarray, no
     return predict_nearest_mean(x_test, labels, means), {"prototype_counts": counts.tolist(), "normalize": normalize}
 
 
+@dataclass
+class WhitenedNCMModel:
+    labels: np.ndarray
+    means_whitened: np.ndarray
+    whitener: np.ndarray
+    normalize: bool
+    metadata: dict
+
+
+def _allocate_stratified_sample_counts(group_sizes: np.ndarray, max_samples: int) -> np.ndarray:
+    group_sizes = np.asarray(group_sizes, dtype=np.int64)
+    if max_samples <= 0 or int(group_sizes.sum()) <= max_samples:
+        return group_sizes.copy()
+    counts = np.zeros_like(group_sizes)
+    active = np.flatnonzero(group_sizes > 0)
+    remaining = int(max_samples)
+    while remaining > 0 and len(active):
+        share = max(remaining // len(active), 1)
+        room = group_sizes[active] - counts[active]
+        additions = np.minimum(room, share)
+        counts[active] += additions
+        used = int(additions.sum())
+        remaining -= used
+        active = active[counts[active] < group_sizes[active]]
+        if used == 0:
+            break
+    return counts
+
+
+def stratified_covariance_indices(
+    targets: np.ndarray,
+    cross_factors: Optional[np.ndarray],
+    max_samples: int,
+    seed: int,
+) -> Tuple[np.ndarray, dict]:
+    targets = np.asarray(targets)
+    if cross_factors is None:
+        cross_factors = np.zeros(len(targets), dtype=np.int64)
+    cross_factors = np.asarray(cross_factors)
+    if len(targets) != len(cross_factors):
+        raise ValueError("targets and cross_factors must have identical lengths")
+
+    groups = {}
+    for idx, (target, factor) in enumerate(zip(targets.tolist(), cross_factors.tolist())):
+        groups.setdefault((int(target), int(factor)), []).append(idx)
+    ordered_groups = sorted(groups)
+    group_sizes = np.array([len(groups[key]) for key in ordered_groups], dtype=np.int64)
+    sample_counts = _allocate_stratified_sample_counts(group_sizes, max_samples)
+    rng = np.random.default_rng(seed)
+    sampled = []
+    group_metadata = []
+    for key, available, requested in zip(ordered_groups, group_sizes.tolist(), sample_counts.tolist()):
+        candidates = np.asarray(groups[key], dtype=np.int64)
+        if requested < available:
+            chosen = np.sort(rng.choice(candidates, size=requested, replace=False))
+        else:
+            chosen = candidates
+        sampled.append(chosen)
+        group_metadata.append({
+            "target": int(key[0]),
+            "cross_factor": int(key[1]),
+            "available": int(available),
+            "sampled": int(len(chosen)),
+        })
+    indices = np.sort(np.concatenate(sampled)) if sampled else np.array([], dtype=np.int64)
+    metadata = {
+        "strategy": "target_then_cross_factor_balanced",
+        "requested_max_samples": int(max_samples),
+        "available_samples": int(len(targets)),
+        "sampled_samples": int(len(indices)),
+        "groups": group_metadata,
+    }
+    return indices, metadata
+
+
+def fit_whitened_ncm(
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    normalize: bool = True,
+    reg: float = 1e-4,
+    cov_max_samples: int = 200000,
+    seed: int = 1994,
+    covariance_cross_factors: Optional[np.ndarray] = None,
+    progress=None,
+) -> WhitenedNCMModel:
+    x_train = np.asarray(x_train, dtype=np.float32)
+    y_train = np.asarray(y_train, dtype=np.int64)
+    if len(x_train) != len(y_train):
+        raise ValueError("x_train and y_train must have identical lengths")
+    if normalize:
+        if progress:
+            progress("wncm normalize start")
+        x_train = l2_normalize(x_train)
+        if progress:
+            progress("wncm normalize done")
+    if progress:
+        progress("wncm prototypes start")
+    labels, means, counts = compute_prototypes(x_train, y_train)
+    if progress:
+        progress(f"wncm prototypes done n_labels={len(labels)}")
+    label_to_pos = {int(label): idx for idx, label in enumerate(labels.tolist())}
+    prototype_positions = np.fromiter((label_to_pos[int(label)] for label in y_train), dtype=np.int64, count=len(y_train))
+    sample_indices, sampling_meta = stratified_covariance_indices(
+        y_train,
+        covariance_cross_factors,
+        cov_max_samples,
+        seed,
+    )
+    if not len(sample_indices):
+        raise ValueError("Cannot fit WNCM with an empty covariance sample")
+    if progress:
+        progress(
+            f"wncm residuals start total={len(x_train)} cov_samples={len(sample_indices)} dim={x_train.shape[1]}"
+        )
+    residuals_cov = x_train[sample_indices] - means[prototype_positions[sample_indices]]
+    if progress:
+        progress("wncm covariance start")
+    cov = (residuals_cov.T @ residuals_cov) / max(len(residuals_cov) - 1, 1)
+    avg_var = float(np.trace(cov) / cov.shape[0]) if cov.shape[0] else 1.0
+    cov = cov + (reg * max(avg_var, 1e-12)) * np.eye(cov.shape[0], dtype=cov.dtype)
+    if progress:
+        progress("wncm covariance done; eigh start")
+    eigvals, eigvecs = np.linalg.eigh(cov.astype(np.float64, copy=False))
+    eigvals = np.maximum(eigvals, 1e-12)
+    whitener = ((eigvecs * (1.0 / np.sqrt(eigvals))) @ eigvecs.T).astype(np.float32)
+    means_whitened = (means @ whitener).astype(np.float32)
+    if progress:
+        progress("wncm fit done")
+    metadata = {
+        "prototype_labels": labels.tolist(),
+        "prototype_counts": counts.tolist(),
+        "normalize": bool(normalize),
+        "reg": float(reg),
+        "cov_samples": int(len(sample_indices)),
+        "covariance_sampling": sampling_meta,
+        "eig_min": float(eigvals.min()),
+        "eig_max": float(eigvals.max()),
+    }
+    return WhitenedNCMModel(labels, means_whitened, whitener, normalize, metadata)
+
+
+def predict_whitened_ncm(model: WhitenedNCMModel, x_test: np.ndarray, progress=None) -> np.ndarray:
+    x_test = np.asarray(x_test, dtype=np.float32)
+    if model.normalize:
+        x_test = l2_normalize(x_test)
+    if progress:
+        progress("wncm projection start")
+    x_test_whitened = (x_test @ model.whitener).astype(np.float32)
+    if progress:
+        progress("wncm nearest-mean predict start")
+    pred = predict_nearest_mean(x_test_whitened, model.labels, model.means_whitened)
+    if progress:
+        progress("wncm nearest-mean predict done")
+    return pred
+
+
 def whitened_ncm_predict(
     x_train: np.ndarray,
     y_train: np.ndarray,
@@ -355,58 +606,21 @@ def whitened_ncm_predict(
     reg: float = 1e-4,
     cov_max_samples: int = 200000,
     seed: int = 1994,
+    covariance_cross_factors: Optional[np.ndarray] = None,
     progress=None,
 ):
-    if normalize:
-        if progress:
-            progress("wncm normalize start")
-        x_train = l2_normalize(x_train)
-        x_test = l2_normalize(x_test)
-        if progress:
-            progress("wncm normalize done")
-    if progress:
-        progress("wncm prototypes start")
-    labels, means, counts = compute_prototypes(x_train, y_train)
-    if progress:
-        progress(f"wncm prototypes done n_labels={len(labels)}")
-    label_to_pos = {label: i for i, label in enumerate(labels)}
-    if progress:
-        progress("wncm residuals start")
-    residuals = x_train - means[np.array([label_to_pos[label] for label in y_train])]
-    if cov_max_samples and len(residuals) > cov_max_samples:
-        rng = np.random.default_rng(seed)
-        idx = rng.choice(len(residuals), size=cov_max_samples, replace=False)
-        residuals_cov = residuals[idx]
-    else:
-        residuals_cov = residuals
-    if progress:
-        progress(f"wncm covariance start residuals={len(residuals)} cov_samples={len(residuals_cov)} dim={x_train.shape[1]}")
-    cov = (residuals_cov.T @ residuals_cov) / max(len(residuals_cov) - 1, 1)
-    avg_var = float(np.trace(cov) / cov.shape[0]) if cov.shape[0] else 1.0
-    cov = cov + (reg * max(avg_var, 1e-12)) * np.eye(cov.shape[0], dtype=cov.dtype)
-    if progress:
-        progress("wncm covariance done; eigh start")
-    eigvals, eigvecs = np.linalg.eigh(cov.astype(np.float64, copy=False))
-    if progress:
-        progress("wncm eigh done; projection start")
-    eigvals = np.maximum(eigvals, 1e-12)
-    whitener = (eigvecs * (1.0 / np.sqrt(eigvals))) @ eigvecs.T
-    x_test_w = x_test @ whitener
-    means_w = means @ whitener
-    if progress:
-        progress("wncm nearest-mean predict start")
-    pred = predict_nearest_mean(x_test_w.astype(np.float32), labels, means_w.astype(np.float32))
-    if progress:
-        progress("wncm nearest-mean predict done")
-    meta = {
-        "prototype_counts": counts.tolist(),
-        "normalize": normalize,
-        "reg": reg,
-        "cov_samples": int(len(residuals_cov)),
-        "eig_min": float(eigvals.min()),
-        "eig_max": float(eigvals.max()),
-    }
-    return pred, meta
+    model = fit_whitened_ncm(
+        x_train,
+        y_train,
+        normalize=normalize,
+        reg=reg,
+        cov_max_samples=cov_max_samples,
+        seed=seed,
+        covariance_cross_factors=covariance_cross_factors,
+        progress=progress,
+    )
+    pred = predict_whitened_ncm(model, x_test, progress=progress)
+    return pred, model.metadata
 
 
 def accuracy_metrics(y_true: np.ndarray, y_pred: np.ndarray, label_names: Optional[Dict[int, str]] = None) -> dict:

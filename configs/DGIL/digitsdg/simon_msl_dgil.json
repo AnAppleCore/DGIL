@@ -1,0 +1,51 @@
+{
+    "prefix": "DGIL",
+    "dataset": "digitsdg",
+    "memory_size": 0,
+    "memory_per_class": 0,
+    "fixed_memory": false,
+    "shuffle": true,
+    "init_cls": 2,
+    "increment": 2,
+    "model_name": "simon_msl",
+    "model_postfix": "20e",
+    "backbone_type": "vit_base_patch16_224",
+    "device": [
+        "0"
+    ],
+    "seed": [
+        1994,
+        1995,
+        1996
+    ],
+    "lrate": 0.0001,
+    "head_lrscale": 1.0,
+    "weight_decay": 0.0005,
+    "batch_size": 64,
+    "lrate_decay": 0.1,
+    "epochs": 20,
+    "milestones": [
+        18
+    ],
+    "bcb_lrscale": 1.0,
+    "grad_clip_norm": 5.0,
+    "msl_rank": 64,
+    "msl_score_sign": "negative",
+    "msl_scale": 0.015625,
+    "msl_normalize_input": false,
+    "train_logit_norm": "none",
+    "eval_logit_norm": "none",
+    "ce_current_task_only": true,
+    "ca_epochs": 0,
+    "ca_samples_per_class": 128,
+    "ca_lr": 0.0001,
+    "ca_logit_norm": "none",
+    "kd_lambda": 0.001,
+    "kd_T": 2,
+    "ema_gamma": 0.96,
+    "print_forget": true,
+    "enable_dgil": true,
+    "random_reference": true,
+    "reference_domain_id": 0,
+    "multi_domain_base_task": false
+}

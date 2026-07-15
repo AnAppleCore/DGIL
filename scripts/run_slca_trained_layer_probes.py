@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--backbones", nargs="+", default=ALIASES, choices=ALIASES)
     parser.add_argument("--seed", type=int, default=1994)
     parser.add_argument("--gpus", default="7", help="Comma-separated GPU ids. One serial worker is launched per GPU.")
-    parser.add_argument("--output-dir", default="results/layer_probe_slca_trained")
+    parser.add_argument("--output-dir", default="results/layer_probe/slca_trained")
     parser.add_argument("--normalization", default="repo", choices=["repo", "imagenet", "clip"])
     parser.add_argument("--run-name", default="seed1994_final")
     parser.add_argument("--session-prefix", default="slca_probe")
@@ -54,7 +54,7 @@ def result_path(root: Path, output_dir_arg: str, dataset: str, alias: str, run_n
     output_dir = Path(output_dir_arg)
     if not output_dir.is_absolute():
         output_dir = root / output_dir
-    return output_dir / "probe_results" / dataset / safe_name(SLCA_BACKBONES[alias]) / safe_name(run_name) / normalization / "results.json"
+    return output_dir / "analyses" / "layer_probe" / dataset / safe_name(SLCA_BACKBONES[alias]) / safe_name(run_name) / normalization / "metrics.json"
 
 
 def screen_exists(name: str) -> bool:

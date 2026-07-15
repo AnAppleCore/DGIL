@@ -355,13 +355,13 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
         x = self.norm_pre(x)
 
-        prompt_loss = torch.zeros((1,), requires_grad=True).to(device=x.device)
+        prompt_loss = torch.zeros((1,), device=x.device)
         for i,blk in enumerate(self.blocks):
 
             if prompt is not None:
                 if train:
                     p_list, loss, x = prompt.forward(q, i, x, train=True)
-                    prompt_loss += loss
+                    prompt_loss = prompt_loss + loss
                 else:
                     p_list, _, x = prompt.forward(q, i, x, train=False)
                 # if p_list is not None and i == 1:

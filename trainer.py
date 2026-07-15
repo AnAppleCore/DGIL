@@ -222,49 +222,94 @@ def _train(args:dict):
         _save_final_checkpoint(args, model)
 
     if args.get('print_forget', False):
-        # report global accuracy matrix and forgetting
-        if len(cnn_matrix) > 0:
-            np_acctable = np.zeros([task + 1, task + 1])
-            for idxx, line in enumerate(cnn_matrix):
-                idxy = len(line)
-                np_acctable[idxx, :idxy] = np.array(line)
-            np_acctable = np_acctable.T
-            forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-            logging.info('Accuracy Matrix (CNN): \n{}'.format(np_acctable))
-            logging.info('Forgetting (CNN): {}'.format(forgetting))
-        if len(nme_matrix) > 0:
-            np_acctable = np.zeros([task + 1, task + 1])
-            for idxx, line in enumerate(nme_matrix):
-                idxy = len(line)
-                np_acctable[idxx, :idxy] = np.array(line)
-            np_acctable = np_acctable.T
-            forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-            logging.info('Accuracy Matrix (NME): \n{}'.format(np_acctable))
-            logging.info('Forgetting (NME): {}'.format(forgetting))
+        if args.get("domain_incremental", False):
+            train_domain_ids = [domain_id for group in data_manager.domain_groups for domain_id in group]
+            unseen_domain_ids = [
+                domain_id for domain_id in range(data_manager.num_domains)
+                if domain_id not in train_domain_ids
+            ]
+            domain_introduction_task = {
+                domain_id: task_id
+                for task_id, group in enumerate(data_manager.domain_groups)
+                for domain_id in group
+            }
 
-        # report domain wise accuracy matrix and forgetting
-        if use_multi_domain_dataset(args["dataset"]):
-            for domain_id, domain_name in enumerate(data_manager.domain_names):
-                cnn_matrix = cnn_matrix_per_domain[domain_name]
-                if len(cnn_matrix)>0:
-                    np_acctable = np.zeros([task + 1, task + 1])
-                    for idxx, line in enumerate(cnn_matrix):
-                        idxy = len(line)
-                        np_acctable[idxx, :idxy] = np.array(line)
-                    np_acctable = np_acctable.T
-                    forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                    logging.info('Domain [{}] {}: Accuracy Matrix (CNN): \n{}'.format(domain_id, domain_name, np_acctable))
-                    logging.info('Domain [{}] {}: Forgetting (CNN): {}'.format(domain_id, domain_name, forgetting))
-                nme_matrix = nme_matrix_per_domain[domain_name]
-                if len(nme_matrix)>0:
-                    np_acctable = np.zeros([task + 1, task + 1])
-                    for idxx, line in enumerate(nme_matrix):
-                        idxy = len(line)
-                        np_acctable[idxx, :idxy] = np.array(line)
-                    np_acctable = np_acctable.T
-                    forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
-                    logging.info('Domain [{}] {}: Accuracy Matrix (NME): \n{}'.format(domain_id, domain_name, np_acctable))
-                    logging.info('Domain [{}] {}: Forgetting (NME): {}'.format(domain_id, domain_name, forgetting))
+            def report_domain_incremental_metrics(curves_per_domain, eval_key):
+                if not all(curves_per_domain[name]["top1"] for name in data_manager.domain_names):
+                    return
+
+                accuracy_matrix = np.array([
+                    curves_per_domain[name]["top1"] for name in data_manager.domain_names
+                ]).T
+                final_accuracies = accuracy_matrix[-1]
+                if not train_domain_ids:
+                    raise ValueError("Domain-incremental evaluation requires at least one training domain.")
+                last_accuracy_in = np.mean(final_accuracies[train_domain_ids])
+                last_accuracy_out = (
+                    np.mean(final_accuracies[unseen_domain_ids]) if unseen_domain_ids else None
+                )
+
+                domain_forgetting = []
+                final_task = data_manager.nb_tasks - 1
+                for domain_id in train_domain_ids:
+                    introduction_task = domain_introduction_task[domain_id]
+                    if introduction_task < final_task:
+                        learned_curve = accuracy_matrix[introduction_task:, domain_id]
+                        domain_forgetting.append(np.max(learned_curve) - learned_curve[-1])
+                forgetting = np.mean(domain_forgetting) if domain_forgetting else 0.0
+
+                logging.info('Accuracy Matrix ({}, Domains): \n{}'.format(eval_key, accuracy_matrix))
+                logging.info('Last Accuracy In ({}): {}'.format(eval_key, last_accuracy_in))
+                if last_accuracy_out is not None:
+                    logging.info('Last Accuracy Out ({}): {}'.format(eval_key, last_accuracy_out))
+                logging.info('Forgetting ({}): {}'.format(eval_key, forgetting))
+
+            report_domain_incremental_metrics(cnn_curve_per_domain, "CNN")
+            report_domain_incremental_metrics(nme_curve_per_domain, "NME")
+        else:
+            # report global accuracy matrix and forgetting
+            if len(cnn_matrix) > 0:
+                np_acctable = np.zeros([task + 1, task + 1])
+                for idxx, line in enumerate(cnn_matrix):
+                    idxy = len(line)
+                    np_acctable[idxx, :idxy] = np.array(line)
+                np_acctable = np_acctable.T
+                forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                logging.info('Accuracy Matrix (CNN): \n{}'.format(np_acctable))
+                logging.info('Forgetting (CNN): {}'.format(forgetting))
+            if len(nme_matrix) > 0:
+                np_acctable = np.zeros([task + 1, task + 1])
+                for idxx, line in enumerate(nme_matrix):
+                    idxy = len(line)
+                    np_acctable[idxx, :idxy] = np.array(line)
+                np_acctable = np_acctable.T
+                forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                logging.info('Accuracy Matrix (NME): \n{}'.format(np_acctable))
+                logging.info('Forgetting (NME): {}'.format(forgetting))
+
+            # report domain wise accuracy matrix and forgetting
+            if use_multi_domain_dataset(args["dataset"]):
+                for domain_id, domain_name in enumerate(data_manager.domain_names):
+                    cnn_matrix = cnn_matrix_per_domain[domain_name]
+                    if len(cnn_matrix)>0:
+                        np_acctable = np.zeros([task + 1, task + 1])
+                        for idxx, line in enumerate(cnn_matrix):
+                            idxy = len(line)
+                            np_acctable[idxx, :idxy] = np.array(line)
+                        np_acctable = np_acctable.T
+                        forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                        logging.info('Domain [{}] {}: Accuracy Matrix (CNN): \n{}'.format(domain_id, domain_name, np_acctable))
+                        logging.info('Domain [{}] {}: Forgetting (CNN): {}'.format(domain_id, domain_name, forgetting))
+                    nme_matrix = nme_matrix_per_domain[domain_name]
+                    if len(nme_matrix)>0:
+                        np_acctable = np.zeros([task + 1, task + 1])
+                        for idxx, line in enumerate(nme_matrix):
+                            idxy = len(line)
+                            np_acctable[idxx, :idxy] = np.array(line)
+                        np_acctable = np_acctable.T
+                        forgetting = np.mean((np.max(np_acctable, axis=1) - np_acctable[:, task])[:task])
+                        logging.info('Domain [{}] {}: Accuracy Matrix (NME): \n{}'.format(domain_id, domain_name, np_acctable))
+                        logging.info('Domain [{}] {}: Forgetting (NME): {}'.format(domain_id, domain_name, forgetting))
 
 
 def _json_safe(value):
@@ -288,7 +333,7 @@ def _safe_backbone_name(backbone_type):
 
 
 def _save_final_checkpoint(args, model):
-    checkpoint_root = args.get("checkpoint_dir", "results/layer_probe_slca_trained/checkpoints")
+    checkpoint_root = args.get("checkpoint_dir", "results/layer_probe/slca_trained/checkpoints")
     checkpoint_dir = os.path.join(
         checkpoint_root,
         str(args["dataset"]),

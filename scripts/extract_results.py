@@ -114,6 +114,9 @@ def parse_log_file(log_file, eval_key="CNN"):
     class_id_pairs = []
     domain_accuracies = {}
     no_nme = False
+    domain_incremental = False
+    found_last_accuracy_in = False
+    found_last_accuracy_out = False
 
     for line in lines:
         if "No NME" in line and eval_key == "NME":
@@ -128,10 +131,18 @@ def parse_log_file(log_file, eval_key="CNN"):
             result_dict["seed"] = line.split(":")[-1].strip()
         if "[trainer.py] => dataset:" in line:
             result_dict["dataset"] = line.split(":")[-1].strip()
+        if "[trainer.py] => domain_incremental:" in line:
+            domain_incremental = line.split(":")[-1].strip().lower() == "true"
         if f"[trainer.py] => Average Accuracy ({eval_key}):" in line:
             result_dict["average_accuracy_all"] = float(line.split(":")[-1].strip())
         if f"[trainer.py] => Last Accuracy ({eval_key}):" in line:
             result_dict["last_accuracy_all"] = float(line.split(":")[-1].strip())
+        if f"[trainer.py] => Last Accuracy In ({eval_key}):" in line:
+            result_dict["last_accuracy_in"] = float(line.split(":")[-1].strip())
+            found_last_accuracy_in = True
+        if f"[trainer.py] => Last Accuracy Out ({eval_key}):" in line:
+            result_dict["last_accuracy_out"] = float(line.split(":")[-1].strip())
+            found_last_accuracy_out = True
         if f"[trainer.py] => {eval_key}: {{'total':" in line:
             acc_dict = safe_literal_eval(line.split(f"{eval_key}:")[-1].strip(), log_file, eval_key)
             result_dict["last_accuracy_all"] = acc_dict.get("total", 0.0)
@@ -159,30 +170,37 @@ def parse_log_file(log_file, eval_key="CNN"):
     if result_dict["forgetting"] < 0.0:
         return result_dict, False, "missing forgetting"
 
-    in_accuracies = []
-    out_accuracies = []
-    out_worst_accuracies = []
+    if domain_incremental:
+        if not found_last_accuracy_in:
+            return result_dict, False, "missing last accuracy in"
+        if not found_last_accuracy_out:
+            result_dict["last_accuracy_out"] = ""
+        result_dict["last_accuracy_out_worst"] = ""
+    else:
+        in_accuracies = []
+        out_accuracies = []
+        out_worst_accuracies = []
 
-    for task_id, ref_domain in task_reference_domains.items():
-        if task_id >= len(class_id_pairs) or ref_domain not in domain_accuracies:
-            continue
+        for task_id, ref_domain in task_reference_domains.items():
+            if task_id >= len(class_id_pairs) or ref_domain not in domain_accuracies:
+                continue
 
-        class_pair = class_id_pairs[task_id]
-        class_key = f"{class_pair[0]:02d}-{class_pair[1]:02d}"
+            class_pair = class_id_pairs[task_id]
+            class_key = f"{class_pair[0]:02d}-{class_pair[1]:02d}"
 
-        in_accuracies.append(domain_accuracies[ref_domain].get(class_key, 0.0))
+            in_accuracies.append(domain_accuracies[ref_domain].get(class_key, 0.0))
 
-        out_domains = [domain for domain in domain_accuracies if domain != ref_domain]
-        out_accs = [domain_accuracies[domain].get(class_key, 0.0) for domain in out_domains]
-        if out_accs:
-            out_accuracies.append(sum(out_accs) / len(out_accs))
-            out_worst_accuracies.append(min(out_accs))
+            out_domains = [domain for domain in domain_accuracies if domain != ref_domain]
+            out_accs = [domain_accuracies[domain].get(class_key, 0.0) for domain in out_domains]
+            if out_accs:
+                out_accuracies.append(sum(out_accs) / len(out_accs))
+                out_worst_accuracies.append(min(out_accs))
 
-    result_dict["last_accuracy_in"] = sum(in_accuracies) / len(in_accuracies) if in_accuracies else 0.0
-    result_dict["last_accuracy_out"] = sum(out_accuracies) / len(out_accuracies) if out_accuracies else 0.0
-    result_dict["last_accuracy_out_worst"] = (
-        sum(out_worst_accuracies) / len(out_worst_accuracies) if out_worst_accuracies else 0.0
-    )
+        result_dict["last_accuracy_in"] = sum(in_accuracies) / len(in_accuracies) if in_accuracies else 0.0
+        result_dict["last_accuracy_out"] = sum(out_accuracies) / len(out_accuracies) if out_accuracies else 0.0
+        result_dict["last_accuracy_out_worst"] = (
+            sum(out_worst_accuracies) / len(out_worst_accuracies) if out_worst_accuracies else 0.0
+        )
 
     return result_dict, True, ""
 
@@ -222,9 +240,9 @@ def build_mean_std(rows):
             "dataset_": dataset,
         }
         for column in METRIC_COLUMNS:
-            values = [float(row[column]) for row in group_rows]
-            result[f"{column}_mean"] = sum(values) / len(values)
-            result[f"{column}_std"] = sample_std(values)
+            values = [float(row[column]) for row in group_rows if row[column] != ""]
+            result[f"{column}_mean"] = sum(values) / len(values) if values else ""
+            result[f"{column}_std"] = sample_std(values) if values else ""
         mean_std_rows.append(result)
     return mean_std_rows
 

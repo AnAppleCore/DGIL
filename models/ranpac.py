@@ -109,31 +109,50 @@ class Learner(BaseLearner):
     
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        task_size = data_manager.get_task_size(self._cur_task)
-        self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
-        self._network.update_fc(self._total_classes)
-
-        try:
-            self._cur_domain = data_manager.get_cur_domain(self._cur_task)
-        except:
-            self._cur_domain = 0
-        for c_id in range(self._known_classes, self._total_classes):
-            self.cls_to_task_id[c_id] = self._cur_task
-            self.cls_to_domain_id[c_id] = self._cur_domain
+        if self.args.get("domain_incremental", False):
+            self._total_classes = data_manager.nb_classes
+            self.topk = min(self.topk, self._total_classes)
+            if self._cur_task == 0:
+                self._network.update_fc(self._total_classes)
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except:
+                self._cur_domain = 0
             if self._cur_domain not in self.domain_id_to_cls:
                 self.domain_id_to_cls[self._cur_domain] = []
-            self.domain_id_to_cls[self._cur_domain].append(c_id)
-        logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            for c_id in range(self._total_classes):
+                self.cls_to_task_id[c_id] = 0
+                self.cls_to_domain_id[c_id] = self._cur_domain
+                if c_id not in self.domain_id_to_cls[self._cur_domain]:
+                    self.domain_id_to_cls[self._cur_domain].append(c_id)
+            logging.info("Domain-incremental task {} on fixed classes 0-{}".format(self._cur_task, self._total_classes))
+            train_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="train", mode="train")
+            test_dataset = data_manager.get_domain_incremental_dataset(self._cur_task, source="test", mode="test")
+            train_dataset_for_protonet = data_manager.get_domain_incremental_dataset(self._cur_task, source="train", mode="test")
+        else:
+            task_size = data_manager.get_task_size(self._cur_task)
+            self._total_classes = self._known_classes + data_manager.get_task_size(self._cur_task)
+            self._network.update_fc(self._total_classes)
 
-        train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train", )
+            try:
+                self._cur_domain = data_manager.get_cur_domain(self._cur_task)
+            except:
+                self._cur_domain = 0
+            for c_id in range(self._known_classes, self._total_classes):
+                self.cls_to_task_id[c_id] = self._cur_task
+                self.cls_to_domain_id[c_id] = self._cur_domain
+                if self._cur_domain not in self.domain_id_to_cls:
+                    self.domain_id_to_cls[self._cur_domain] = []
+                self.domain_id_to_cls[self._cur_domain].append(c_id)
+            logging.info("Learning on {}-{}".format(self._known_classes, self._total_classes))
+            train_dataset = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="train", )
+            test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
+            train_dataset_for_protonet = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes), source="train", mode="test", )
+
         self.train_dataset=train_dataset
         self.data_manager=data_manager
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
-
-        test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
-
-        train_dataset_for_protonet = data_manager.get_dataset(np.arange(self._known_classes, self._total_classes), source="train", mode="test", )
         self.train_loader_for_protonet = DataLoader(train_dataset_for_protonet, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
 
         if len(self._multiple_gpus) > 1:
@@ -213,22 +232,35 @@ class Learner(BaseLearner):
 
 
     def _compute_distributions(self, data_manager):
-        if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
-            ori_classes = self._class_means_slca.shape[0]
-            assert ori_classes==self._known_classes
-            new_class_means_slca = np.zeros((self._total_classes, self.feature_dim))
-            new_class_means_slca[:self._known_classes] = self._class_means_slca
-            self._class_means_slca = new_class_means_slca
-            new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
-            new_class_cov[:self._known_classes] = self._class_covs_slca
-            self._class_covs_slca = new_class_cov
-        else:
+        if self.args.get("domain_incremental", False):
             self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
             self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+            class_start = 0
+            seen_domains = [d for group in data_manager.domain_groups[:self._cur_task + 1] for d in group]
+        else:
+            if hasattr(self, '_class_means_slca') and self._class_means_slca is not None:
+                ori_classes = self._class_means_slca.shape[0]
+                assert ori_classes==self._known_classes
+                new_class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+                new_class_means_slca[:self._known_classes] = self._class_means_slca
+                self._class_means_slca = new_class_means_slca
+                new_class_cov = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+                new_class_cov[:self._known_classes] = self._class_covs_slca
+                self._class_covs_slca = new_class_cov
+            else:
+                self._class_means_slca = np.zeros((self._total_classes, self.feature_dim))
+                self._class_covs_slca = torch.zeros((self._total_classes, self.feature_dim, self.feature_dim))
+            class_start = self._known_classes
+            seen_domains = None
 
-        for class_idx in range(self._known_classes, self._total_classes):
-            data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
-                                                                  mode='test', ret_data=True)
+        for class_idx in range(class_start, self._total_classes):
+            if self.args.get("domain_incremental", False):
+                data, targets, idx_dataset = data_manager.get_domain_dataset(
+                    np.arange(class_idx, class_idx+1), source='train', mode='test', domain_id=seen_domains, ret_data=True
+                )
+            else:
+                data, targets, idx_dataset = data_manager.get_dataset(np.arange(class_idx, class_idx+1), source='train',
+                                                                      mode='test', ret_data=True)
             idx_loader = DataLoader(idx_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
             vectors, _ = self._extract_vectors(idx_loader)
 
