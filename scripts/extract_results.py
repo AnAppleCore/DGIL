@@ -114,6 +114,7 @@ def parse_log_file(log_file, eval_key="CNN"):
     class_id_pairs = []
     domain_accuracies = {}
     no_nme = False
+    enable_dgil = False
     domain_incremental = False
     found_last_accuracy_in = False
     found_last_accuracy_out = False
@@ -131,6 +132,8 @@ def parse_log_file(log_file, eval_key="CNN"):
             result_dict["seed"] = line.split(":")[-1].strip()
         if "[trainer.py] => dataset:" in line:
             result_dict["dataset"] = line.split(":")[-1].strip()
+        if "[trainer.py] => enable_dgil:" in line:
+            enable_dgil = line.split(":")[-1].strip().lower() == "true"
         if "[trainer.py] => domain_incremental:" in line:
             domain_incremental = line.split(":")[-1].strip().lower() == "true"
         if f"[trainer.py] => Average Accuracy ({eval_key}):" in line:
@@ -148,11 +151,24 @@ def parse_log_file(log_file, eval_key="CNN"):
             result_dict["last_accuracy_all"] = acc_dict.get("total", 0.0)
         if f"[trainer.py] => Forgetting ({eval_key}):" in line:
             result_dict["forgetting"] = float(line.split(":")[-1].strip())
-        if "=> Task" in line and "reference domain is" in line:
+        if "=> Task" in line and (
+            "reference domain group is" in line or "reference domain is" in line
+        ):
             task_id = int(line.split("Task")[1].split(":")[0].strip())
-            domain_part = line.split("reference domain is")[-1].strip()
-            domain_id = int(domain_part.split("[")[1].split("]")[0].strip())
-            task_reference_domains[task_id] = domain_id
+            marker = (
+                "reference domain group is"
+                if "reference domain group is" in line
+                else "reference domain is"
+            )
+            domain_part = line.split(marker)[-1].strip()
+            domain_ids = safe_literal_eval(
+                domain_part.split()[0], log_file, f"Task {task_id} reference domains"
+            )
+            if not isinstance(domain_ids, (list, tuple)) or len(domain_ids) != 1:
+                raise ValueError(
+                    f"result extraction expects one reference domain per task in {log_file}: {domain_ids}"
+                )
+            task_reference_domains[task_id] = int(domain_ids[0])
         if "[trainer.py] => Class ID pairs:" in line:
             class_id_pairs = safe_literal_eval(
                 line.split("[trainer.py] => Class ID pairs:")[-1].strip(), log_file, "Class ID pairs"
@@ -177,6 +193,20 @@ def parse_log_file(log_file, eval_key="CNN"):
             result_dict["last_accuracy_out"] = ""
         result_dict["last_accuracy_out_worst"] = ""
     else:
+        if enable_dgil:
+            expected_task_ids = set(range(len(class_id_pairs)))
+            parsed_task_ids = set(task_reference_domains)
+            if not class_id_pairs:
+                return result_dict, False, "missing class id pairs"
+            if parsed_task_ids != expected_task_ids:
+                return result_dict, False, (
+                    "missing reference domains: expected tasks {}, parsed tasks {}".format(
+                        sorted(expected_task_ids), sorted(parsed_task_ids)
+                    )
+                )
+            if not domain_accuracies:
+                return result_dict, False, "missing per-domain accuracies"
+
         in_accuracies = []
         out_accuracies = []
         out_worst_accuracies = []

@@ -30,8 +30,27 @@ class DomainDataManager(DataManager):
         self._train_data, self._train_targets = idata.train_data, idata.train_targets
         self._test_data, self._test_targets = idata.test_data, idata.test_targets
         self.use_path = idata.use_path
+        self.domain_names = list(idata.domain_names)
+
+        selected_domain_names = self.args.get("selected_domain_names", None)
+        if selected_domain_names is not None:
+            if not isinstance(selected_domain_names, (list, tuple)) or not selected_domain_names:
+                raise ValueError("selected_domain_names must be a non-empty list of domain names.")
+            if len(selected_domain_names) != len(set(selected_domain_names)):
+                raise ValueError("selected_domain_names must not contain duplicate domain names.")
+            missing_domains = [name for name in selected_domain_names if name not in self.domain_names]
+            if missing_domains:
+                raise ValueError("selected_domain_names contains unknown domains: {}".format(missing_domains))
+
+            selected_domain_ids = [self.domain_names.index(name) for name in selected_domain_names]
+            self._train_data = [self._train_data[domain_id] for domain_id in selected_domain_ids]
+            self._train_targets = [self._train_targets[domain_id] for domain_id in selected_domain_ids]
+            self._test_data = [self._test_data[domain_id] for domain_id in selected_domain_ids]
+            self._test_targets = [self._test_targets[domain_id] for domain_id in selected_domain_ids]
+            self.domain_names = list(selected_domain_names)
+            logging.info("Selected domains: {}".format(self.domain_names))
+
         self.num_domains = len(self._train_data)
-        self.domain_names = idata.domain_names
         assert self.num_domains == len(self.domain_names), "Number of domains and domain names do not match."
         logging.info("Number of domains: {}".format(self.num_domains))
 
@@ -68,6 +87,49 @@ class DomainDataManager(DataManager):
             _map_new_class_index(_test_targets_d, self._class_order)
             for _test_targets_d in self._test_targets
         ]
+
+        train_domain_class_cap = self.args.get("train_domain_class_cap", None)
+        if train_domain_class_cap is not None:
+            train_domain_class_cap = int(train_domain_class_cap)
+            if train_domain_class_cap <= 0:
+                raise ValueError("train_domain_class_cap must be a positive integer.")
+            subset_seed = int(self.args.get("train_subset_seed", 42))
+            logging.info(
+                "Training domain-class cap: cap=%d, subset_seed=%d, replacement=False",
+                train_domain_class_cap,
+                subset_seed,
+            )
+            for domain_id, domain_name in enumerate(self.domain_names):
+                domain_data = self._train_data[domain_id]
+                domain_targets = self._train_targets[domain_id]
+                selected_indices = []
+                before_counts, after_counts = {}, {}
+                for class_id in range(len(self._class_order)):
+                    class_indices = np.flatnonzero(domain_targets == class_id)
+                    before_counts[class_id] = len(class_indices)
+                    sample_count = min(len(class_indices), train_domain_class_cap)
+                    if sample_count < len(class_indices):
+                        rng = np.random.default_rng(
+                            np.random.SeedSequence([subset_seed, domain_id, class_id])
+                        )
+                        class_indices = rng.choice(
+                            class_indices, size=sample_count, replace=False
+                        )
+                    selected_indices.append(class_indices)
+                    after_counts[class_id] = sample_count
+
+                selected_indices = np.sort(np.concatenate(selected_indices).astype(np.int64, copy=False))
+                self._train_data[domain_id] = domain_data[selected_indices]
+                self._train_targets[domain_id] = domain_targets[selected_indices]
+                logging.info(
+                    "Training domain-class cap domain [%d] %s: %d -> %d, labels before=%s, after=%s",
+                    domain_id,
+                    domain_name,
+                    len(domain_data),
+                    len(self._train_data[domain_id]),
+                    before_counts,
+                    after_counts,
+                )
 
         unseen = set(self.unseen_domain_ids or [])
         invalid_unseen = sorted(domain_id for domain_id in unseen if domain_id < 0 or domain_id >= self.num_domains)
